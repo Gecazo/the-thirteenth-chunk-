@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+data/
+/soul.md
+/soul.md.*.tmp
+*.md.lock
+*.sqlite*
+*.local.log
+
+# Bundled runtime/JDK and server binaries — download via BUILD guide instead
+/local-server/
+
+# Bundled runtime/JDK and server binaries — download via BUILD guide instead
+/local-server/
