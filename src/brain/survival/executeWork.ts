@@ -156,15 +156,25 @@ async function approach(bot: Bot, pos: Vec3, signal: AbortSignal) {
 }
 
 async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius: number, signal: AbortSignal, rooted = false) {
-  const check = () => {
-    const b = bot.blockAt(work.pos, false)
-    const permitted = rooted ? logs.has(work.name) && insideWorkArea(project.anchor, work.pos, radius) && !protectedByProject(project, work.pos) &&
-      !faces.some(face => dangerousBlocks.has(bot.blockAt(work.pos.plus(face), false)?.name ?? ''))
-      : b && mineable(bot, b, project, radius)
-    if (!b || b.name !== work.name || !permitted) throw new Error('Resource changed or is no longer eligible')
-    return b
+  // Chunk data can lag a beat behind the planner on busy servers: a cell that was soil at
+  // enumeration may briefly read as air/other. Give the world one settle-retry before
+  // declaring the resource gone.
+  const check = async (): Promise<LocalBlock> => {
+    const attempt = (): LocalBlock | null => {
+      const b = bot.blockAt(work.pos, false)
+      const permitted = rooted ? logs.has(work.name) && insideWorkArea(project.anchor, work.pos, radius) && !protectedByProject(project, work.pos) &&
+        !faces.some(face => dangerousBlocks.has(bot.blockAt(work.pos.plus(face), false)?.name ?? ''))
+        : b && mineable(bot, b, project, radius)
+      return b && b.name === work.name && permitted ? b : null
+    }
+    const first = attempt()
+    if (first) return first
+    await delay(320, signal)
+    const second = attempt()
+    if (second) return second
+    throw new Error('Resource changed or is no longer eligible')
   }
-  check()
+  await check()
   if (!unreachableForMining(bot, bot.blockAt(work.pos, false)!, project, radius)) {
     if (!rooted) await approach(bot, work.pos, signal)
   } else if (!rooted) {
@@ -172,7 +182,7 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
     // cooldown breaks the planner's fixation;dig-cover jobs and other targets take over.
     throw new Error('Resource is not reachable from any nearby standing spot')
   }
-  const ready = check()
+  const ready = await check()
   let tool = bot.pathfinder.bestHarvestTool(ready)
   if (!logs.has(work.name) && !soilBlocks.has(work.name)) {
     if (!tool || !isPick(tool.name) || !ready.canHarvest(tool.type)) tool = bot.inventory.items().find(i => isPick(i.name) && ready.canHarvest(i.type)) ?? null
@@ -184,7 +194,7 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
   if (tool) await untilAbort(bot.equip(tool, 'hand'), signal)
   // Re-approach after look-at: the ray to a high log can be flaky from one angle.
   const diggable = async () => {
-    const block = check()
+    const block = await check()
     if (!canDigFromHere(bot, block) || !bot.canDigBlock(block)) {
       // Second chance: step into a cell adjacent to the block's own X/Z columns (stone
       // under a hole rim is only diggable from inside the pit itself).
@@ -192,7 +202,7 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
         await goto(bot, new goals.GoalNear(block.position.x, block.position.y, block.position.z, 1), signal)
       }
     }
-    const target = check()
+    const target = await check()
     return canDigFromHere(bot, target) && bot.canDigBlock(target) ? target : null
   }
   let block = await diggable()
