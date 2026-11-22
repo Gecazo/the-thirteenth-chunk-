@@ -54,10 +54,12 @@ export function mineable(bot: Bot, block: LocalBlock, project: SurvivalProject, 
     // Skip soil with more soil stacked on top (gravity churn: digging support sand
     // makes the column fall and the same cell keeps re-offering stale jobs) and soil
     // touching water (digging it floods the neighborhood and every follow-up job fails).
+    // Exposure accepts ANY face (incl. top) — diggableSoil offers top-exposed blocks;
+    // a horizontal-only check here would reject exactly what was offered.
     const above = bot.blockAt(pos.offset(0, 1, 0), false)
     if (above && soilBlocks.has(above.name)) return false
     if (faces.some(face => bot.blockAt(pos.plus(face), false)?.name.includes('water'))) return false
-    return faces.slice(2).some(face => isAir(bot.blockAt(pos.plus(face), false)?.name))
+    return faces.some(face => isAir(bot.blockAt(pos.plus(face), false)?.name))
   }
   if (!ores.has(block.name)) return false
   // A surface face must be exposed; never start a tunnel or remove a floor by mining down.
