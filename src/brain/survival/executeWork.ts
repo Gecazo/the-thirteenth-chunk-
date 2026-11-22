@@ -160,19 +160,20 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
   // enumeration may briefly read as air/other. Give the world one settle-retry before
   // declaring the resource gone.
   const check = async (): Promise<LocalBlock> => {
-    const attempt = (): LocalBlock | null => {
+    const attempt = (): { block: LocalBlock | null; reason: string } => {
       const b = bot.blockAt(work.pos, false)
+      if (!b || b.name !== work.name) return { block: null, reason: `block is ${b?.name ?? 'unloaded'} at ${work.pos}` }
       const permitted = rooted ? logs.has(work.name) && insideWorkArea(project.anchor, work.pos, radius) && !protectedByProject(project, work.pos) &&
         !faces.some(face => dangerousBlocks.has(bot.blockAt(work.pos.plus(face), false)?.name ?? ''))
         : b && mineable(bot, b, project, radius)
-      return b && b.name === work.name && permitted ? b : null
+      return permitted ? { block: b, reason: '' } : { block: null, reason: `eligibility (adjacent: ${faces.map(f => bot.blockAt(work.pos.plus(f), false)?.name).join(',')})` }
     }
     const first = attempt()
-    if (first) return first
+    if (first.block) return first.block
     await delay(320, signal)
     const second = attempt()
-    if (second) return second
-    throw new Error('Resource changed or is no longer eligible')
+    if (second.block) return second.block
+    throw new Error(`Resource changed or is no longer eligible: ${first.reason || second.reason}`)
   }
   await check()
   if (!unreachableForMining(bot, bot.blockAt(work.pos, false)!, project, radius)) {
