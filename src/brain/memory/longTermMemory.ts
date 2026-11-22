@@ -1,6 +1,7 @@
 import type { Memory, MemoryEvent } from '../../types/memory'
 import { milestoneNames, type Focus } from '../../types/state'
 import { salience } from './salience'
+import { skillEvidence } from '../survival/skills'
 
 export function consolidateMemories(events: MemoryEvent[], day: number, at: number, focuses: Focus[]): Memory[] {
   const ranked = events.map(e => ({ e, rank: salience(e, at) })).sort((a, b) => b.rank - a.rank || b.e.at - a.e.at)
@@ -16,6 +17,12 @@ export function consolidateMemories(events: MemoryEvent[], day: number, at: numb
   if (ate) memories.push({ id: 'preference:nourishment', at, day, kind: 'preference', summary: 'Keep safe food available for the next trip.', topics: ['ate', 'eat_well'], valence: .3, salience: .45 })
   for (const milestone of new Set(events.flatMap(event => event.kind === 'milestone' && event.milestone ? [event.milestone] : []))) {
     memories.push({ id: `survival:${milestone}`, at, day, kind: 'episodic', summary: `Reached a survival milestone: ${milestoneNames[milestone]}.`, topics: ['milestone', milestone], valence: .8, salience: .8 })
+  }
+  for (const entry of skillEvidence(events).filter(e => e.kind !== 'walk')) {
+    const label = { tree: 'Tree harvest', mine: 'Mining', craft: 'Crafting', place: 'Building', plant: 'Planting', smelt: 'Smelting', walk: 'Exploration' }[entry.kind]
+    memories.push({ id: `experience:${day}:${entry.kind}`, at, day, kind: 'episodic',
+      summary: `${label} on day ${day}: ${entry.successes} succeeded and ${entry.failures} failed; ${entry.nearSuccesses} nearby successes, ${entry.farFailures} distant failures.`,
+      topics: [entry.kind, label, 'experience'], valence: (entry.successes - entry.failures) / (entry.successes + entry.failures), salience: .6 })
   }
   const areas = new Set<string>()
   for (const { e, rank } of ranked) if (e.area && ['danger', 'damage', 'died'].includes(e.kind) && areas.size < 6 && !areas.has(e.area)) {

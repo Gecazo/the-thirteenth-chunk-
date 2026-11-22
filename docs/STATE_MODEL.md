@@ -14,9 +14,11 @@
 | `goals` | Optional local operator note and up to three distinct typed intentions |
 | `circadian` | Minecraft day and tick-of-day, observed bed state, last consolidated day |
 | `project` | Optional saved work anchor, home/workshop sites, stations, pending iron smelt, and validated milestones |
+| `journal` | Last reviewed world day, curated observation notes (2,200 characters), and explicit per-player preferences (1,375 characters total) |
+| `skills` | Evidence-backed preferences over existing survival jobs, with world day and observed success/failure counts |
 | `runtime` | Pause, follow/sleep requests, last action and update timestamp; pause persists, active requests don't |
 
-**STM** is a checkpointed ring (300 events by default). It records typed events and affect; raw player chat is not retained. Danger events can include a coarse 16-block location cell for the local danger map. **LTM** stores up to 2,000 entries across episodic summaries, semantic lessons, social activity, preferences, and danger cells. The profile's social entries store per-player continuity. Episode ranking uses age, salience, topical overlap and emotional congruence. LTM is used by `!memory`; the danger map records observations rather than controlling movement, which always uses current perception.
+**STM** is a checkpointed ring (300 events by default). It records typed events and affect; raw player chat is not retained. Danger events can include a coarse 16-block location cell for the local danger map. **LTM** stores up to 2,000 entries across episodic summaries, semantic lessons, social activity, general preferences, and danger cells. `!recall` searches topics and summary text; planning and dialogue recall a small selection and up to five recent typed events. The danger map records observations rather than controlling movement, which always uses current perception. Private preferences are saved separately under the player who issued `!remember` and enter only that player's dialogue prompt.
 
 Survival milestones are historical achievements, not assumptions about current inventory or blocks. They are checked against server observations and recorded once in the project checklist, with a typed event for sleep consolidation. Existing Markdown saves still load without the new optional fields.
 

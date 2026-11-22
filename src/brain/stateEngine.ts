@@ -1,6 +1,8 @@
 import type { Logger } from '../infra/logger'
 import type { Clock } from '../infra/clock'
 import { clamp, defaultState, projectSchema, stateSchema, type AgentState } from '../types/state'
+import { skillBook } from '../types/skills'
+import { journalSchema } from '../types/journal'
 
 function bounded(raw: unknown, max: number): unknown {
   return typeof raw === 'number' && Number.isFinite(raw) ? clamp(raw, max) : raw
@@ -29,6 +31,10 @@ export function recoverState(raw: unknown, name: string, now: number, log: Logge
   if (circadian.success) seed.circadian = circadian.data
   const project = projectSchema.safeParse(data.project)
   if (project.success) seed.project = project.data
+  const skills = skillBook.safeParse(data.skills)
+  if (skills.success) seed.skills = skills.data
+  const journal = journalSchema.safeParse(data.journal)
+  if (journal.success) seed.journal = journal.data
   if (data.runtime && typeof data.runtime === 'object' && 'paused' in data.runtime && typeof data.runtime.paused === 'boolean') seed.runtime.paused = data.runtime.paused
   if (Array.isArray(data.social)) {
     const names = new Set<string>()

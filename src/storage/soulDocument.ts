@@ -40,6 +40,11 @@ export function renderSoulDocument(snapshot: SoulSnapshot): string {
       ...[...Object.entries(state.personality), ...Object.entries(state.values)].map(([key, value]) => `- **${key}:** ${percent(value)}`),
       '', '## Current intentions', '', ...state.goals.intentions.map(focus => `- ${focusText[focus]}.`))
     if (state.goals.userGoal) lines.push('', `**Operator note:** ${plain(state.goals.userGoal)}`)
+    const skills = Object.entries(state.skills)
+    if (skills.length) lines.push('', '## Learned skills', '', ...skills.map(([kind, entry]) =>
+      `- **${kind}:** ${entry.rule} (day ${entry.day}; ${entry.successes} succeeded, ${entry.failures} failed).`))
+    lines.push('', '## Curated journal', '', ...(state.journal.notes.length ? state.journal.notes.map(note => `- ${plain(note.text)}`) : ['No curated notes yet.']))
+    if (state.journal.players.length) lines.push('', `Private player preferences in checkpoint: ${state.journal.players.length}.`)
     if (state.project) {
       lines.push('', '## Survival progress', '', ...Object.entries(milestoneNames).map(([key, label]) =>
         `- [${state.project?.milestones?.some(m => m === key) ? 'x' : ' '}] ${label}`))

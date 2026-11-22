@@ -18,8 +18,10 @@ export type Work =
   | Mining
   | { kind: 'tree'; label: string; pos: Vec3 }
   | { kind: 'craft'; label: string; name: string; table?: Vec3 }
-  | { kind: 'place'; label: string; pos: Vec3; name: string; purpose: 'table' | 'shelter' | 'furnace' | 'workshop' }
+  | { kind: 'place'; label: string; pos: Vec3; name: string; purpose: 'table' | 'shelter' | 'furnace' | 'workshop' | 'house' | 'mineshaft'; role?: string }
   | { kind: 'smelt'; label: string; pos: Vec3 }
   | { kind: 'plant'; label: string; pos: Vec3; sapling: string }
+  | { kind: 'store'; label: string; pos: Vec3; keep?: string[] }
+  | { kind: 'furnish'; label: string; pos: Vec3; name: string; purpose: 'house' | 'mineshaft'; role: string }
   | Travel
 export type LocalBlock = NonNullable<ReturnType<Bot['blockAt']>>

@@ -14,6 +14,8 @@ interface Snapshot {
   perception: PerceptionFrame | null
   activeAction: Action | null
   activeJob: string | null
+  jobSource: string | null
+  team: MonitorPatch['team']
   thoughts: MonitorThoughts | null
   events: MemoryEvent[]
   notes: Array<{ at: number; level: 'info' | 'warn' | 'error'; message: string }>
@@ -79,6 +81,8 @@ function html(url: string): string {
     <section><h2>Thoughts / Decision</h2><pre id="thoughts" class="mono">No decisions yet.</pre></section>
     <section><h2>Vitals & Needs</h2><div id="vitals" class="kv"></div></section>
     <section><h2>Goals & Runtime</h2><pre id="goals" class="mono">-</pre></section>
+    <section><h2>Learned skills &amp; team</h2><pre id="learning" class="mono">-</pre></section>
+    <section><h2>Curated journal</h2><pre id="journal" class="mono">No curated notes yet.</pre></section>
     <section><h2>Inventory</h2><pre id="inventory" class="mono">-</pre></section>
     <section><h2>Nearby / Safety</h2><pre id="safety" class="mono">-</pre></section>
     <section><h2>Recent Events</h2><pre id="events" class="mono">-</pre></section>
@@ -141,6 +145,7 @@ function html(url: string): string {
       document.getElementById('goals').textContent = s ? [
         'active action: ' + (data.activeAction || s.runtime.lastAction || '-'),
         'current job: ' + (data.activeJob || '-'),
+        'planner: ' + (data.jobSource || '-'),
         'paused: ' + s.runtime.paused,
         'sleeping: ' + s.circadian.sleeping,
         'day/time: ' + s.circadian.day + ' / ' + s.circadian.timeOfDay,
@@ -149,6 +154,12 @@ function html(url: string): string {
         'following: ' + (s.runtime.following || '-'),
         'sleepRequested: ' + s.runtime.sleepRequested,
       ].join(BR) : '-'
+      const learned = Object.entries(s?.skills || {}).map(([kind, entry]) => kind + ': ' + entry.rule + ' (day ' + entry.day + '; ' + entry.successes + ' worked, ' + entry.failures + ' failed)')
+      const peers = (data.team?.peers || []).map(p => p.name + ': ' + p.activity)
+      document.getElementById('learning').textContent = [...(learned.length ? learned : ['No skills learned yet.']),
+        ...(data.team ? ['', 'Shared shelter · ' + data.team.id, ...(peers.length ? peers : ['No teammates reporting yet.'])] : [])].join(BR)
+      const notes = (s?.journal?.notes || []).map(note => '• ' + note.text)
+      document.getElementById('journal').textContent = notes.length ? ['Last review: day ' + s.journal.day, '', ...notes].join(BR) : 'No curated notes yet. A real sleep lets Ollama review the day.'
 
       document.getElementById('inventory').textContent = p ? (byCount(p.inventory.items).join(BR) || '(empty)') : '-'
       document.getElementById('safety').textContent = p ? [
@@ -162,7 +173,7 @@ function html(url: string): string {
       ].join(BR) : '-'
 
       document.getElementById('events').textContent = (data.events || []).map(function (e) {
-        return 'day ' + e.day + ' · ' + e.kind + (e.tag ? (' (' + e.tag + ')') : '')
+        return 'day ' + e.day + ' · ' + (e.work ? e.work.kind + (e.work.success ? ' succeeded' : ' failed') + ' · ' + e.work.distance + ' blocks away' : e.kind + (e.tag ? (' (' + e.tag + ')') : ''))
       }).join(BR) || '-'
       document.getElementById('raw').textContent = JSON.stringify(data, null, 2)
     }
@@ -200,7 +211,7 @@ export function startMonitor(config: Config): MonitorSink | undefined {
   if (!config.MONITOR_ENABLED) return undefined
   const snapshot: Snapshot = {
     updatedAt: Date.now(), status: 'starting', username: null, reason: null,
-    state: null, perception: null, activeAction: null, activeJob: null, thoughts: null, events: [], notes: [],
+    state: null, perception: null, activeAction: null, activeJob: null, jobSource: null, team: undefined, thoughts: null, events: [], notes: [],
   }
   const control: MonitorControl = {}
   let renderer: (() => string | undefined) | undefined
@@ -215,6 +226,8 @@ export function startMonitor(config: Config): MonitorSink | undefined {
     if (patch.perception !== undefined) snapshot.perception = structuredClone(patch.perception)
     if (patch.activeAction !== undefined) snapshot.activeAction = patch.activeAction
     if (patch.activeJob !== undefined) snapshot.activeJob = patch.activeJob
+    if (patch.jobSource !== undefined) snapshot.jobSource = patch.jobSource
+    if (patch.team) snapshot.team = structuredClone(patch.team)
     if (patch.thoughts !== undefined) snapshot.thoughts = structuredClone(patch.thoughts)
     if (patch.events !== undefined) snapshot.events = patch.events.slice(-30).map(e => ({ ...e }))
   }

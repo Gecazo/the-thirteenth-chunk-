@@ -17,16 +17,19 @@ import { runMinecraft, type MinecraftContext } from './bot/minecraftClient'
 import { ReconnectControl, reconnect } from './bot/reconnect'
 import { ZodError } from 'zod'
 import { startMonitor } from './monitor/server'
+import { openTeam } from './brain/survival/team'
 
 async function main() {
   const config = loadConfig(), log = makeLogger(config), clock = systemClock, rng = seededRng(config.RNG_SEED)
+  const storage = openSoulFile(config.STATE_PATH)
   const monitor = startMonitor(config)
   monitor?.update({ status: 'starting', updatedAt: clock.now() })
   const reconnectControl = new ReconnectControl()
   monitor?.setConnectHandler(() => reconnectControl.connectNow())
   if (monitor) log.info({ url: monitor.url }, 'SoulBot monitor running')
-  const storage = openSoulFile(config.STATE_PATH)
+  let team: Awaited<ReturnType<typeof openTeam>>
   try {
+    team = await openTeam(config)
     const stateRepo = new StateRepo(storage), persisted = stateRepo.load()
     const engine = new StateEngine(persisted.state, playerName.safeParse(config.MC_USERNAME).data ?? 'SoulBot', clock, log)
     const stm = new ShortTermMemory(config.STM_CAPACITY, persisted.events)
@@ -35,7 +38,7 @@ async function main() {
     const ctx: MinecraftContext = { config, log, clock, rng, engine, stm, stateRepo,
       memories: new MemoryRepo(storage), social: new SocialRepo(storage), repo: new SleepRepo(storage),
       providers: { local: config.LOCAL_LLM_ENABLED ? ollamaClient(config) : undefined, cloud: config.CLOUD_SLEEP_ENABLED ? cloudClient(config) : undefined },
-      monitor,
+      monitor, team,
     }
     installShutdown(async () => { log.info('Graceful shutdown requested'); controller.abort(); await monitor?.close() })
     log.info({ host: config.MC_HOST, port: config.MC_PORT, identity: engine.get().identity.id, auth: config.MC_AUTH,
@@ -49,6 +52,7 @@ async function main() {
   } finally {
     storage.close()
     await monitor?.close().catch(() => {})
+    team?.close()
   }
 }
 

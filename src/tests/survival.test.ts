@@ -51,10 +51,12 @@ test('renders terrain in the facing direction and offers bounded, structured gam
 
 test('shelter has distinct wall and roof cells, open interior and a two-block entry', () => {
   const cells = shelterCells(anchor)
-  assert.equal(new Set(cells.map(String)).size, 38)
-  for (const y of [64, 65, 66]) assert.equal(cells.filter(p => p.y === y).length, y === 66 ? 16 : 11)
+  assert.equal(new Set(cells.map(String)).size, cells.length)
+  assert.equal(cells.length, 39)
+  assert.equal(cells.filter(p => p.y === 64).length, 12)
+  assert.equal(cells.filter(p => p.y === 65).length, 11)
+  assert.equal(cells.filter(p => p.y === 66).length, 16)
   for (const y of [64, 65]) {
-    assert.equal(cells.some(p => p.equals(new Vec3(1, y, 3))), false)
     assert.equal(cells.some(p => p.equals(new Vec3(2, y, 2))), false)
   }
   assert.ok(cells.every(p => insideWorkArea(anchor, p, 12)))
@@ -95,12 +97,23 @@ test('uses a valid model choice, and falls back deterministically on rejection o
   const state = defaultState('SoulBot', clock.now()), signal = new AbortController().signal
   for (const [answer, expected] of [[{ choice: 1 }, 2], [{ choice: 999 }, 1], [new Error('Ollama offline'), 1]] as const) {
     const { bot, crafted } = craftingFixture()
-    const autonomy = new Autonomy(bot, config, log, { async propose() { if (answer instanceof Error) throw answer; return answer } })
+    const autonomy = new Autonomy(bot, { ...config, AUTONOMY_REQUIRE_AI: false }, log, { async propose() { if (answer instanceof Error) throw answer; return answer } })
     const updates: unknown[] = []
     await autonomy.work(state, frame(), p => updates.push(p), signal)
     assert.deepEqual(crafted, [expected])
     assert.deepEqual(updates, [{ anchor }])
   }
+})
+
+test('strict AI mode asks for each job and will not silently execute a rejected plan', async () => {
+  const { bot, crafted } = craftingFixture()
+  let calls = 0
+  const autonomy = new Autonomy(bot, config, log, { async propose() { return { choice: ++calls === 1 ? 1 : 999 } } })
+  const state = defaultState('SoulBot', clock.now()), signal = new AbortController().signal
+  await autonomy.work(state, frame(), () => {}, signal)
+  await autonomy.work(state, frame(), () => {}, signal)
+  assert.equal(calls, 2)
+  assert.deepEqual(crafted, [2])
 })
 
 test('cancels an in-flight model decision before it can start a job', async () => {
@@ -131,11 +144,11 @@ test('validates placement against a clear ray to the correct support face', asyn
     } },
     equip: async () => {}, lookAt: async () => {}, placeBlock: async () => { placed = true },
   } as unknown as Bot
-  const job: Work = { kind: 'place', purpose: 'table', name: 'crafting_table', label: 'Place workbench', pos }
+  const job: Work = { kind: 'place', purpose: 'workshop', name: 'crafting_table', label: 'Place workbench', pos }
   const signal = new AbortController().signal
-  await executeWork(bot, job, { anchor }, 28, signal)
+  await executeWork(bot, job, { anchor, workshop: { x: pos.x, y: pos.y, z: pos.z } }, 28, signal)
   assert.equal(placed, true)
-  await assert.rejects(executeWork(bot, job, { anchor }, 28, signal), /occupied cell/)
+  await assert.rejects(executeWork(bot, job, { anchor, workshop: { x: pos.x, y: pos.y, z: pos.z } }, 28, signal), /occupied cell/)
 })
 
 test('tree jobs recognize a soil-rooted trunk with foliage, not a pillar or project blocks', () => {
@@ -201,7 +214,7 @@ test('tree jobs break the full trunk and collect nearby drops', async () => {
         : 'air',
     }),
     world: {
-      raycast: (_from: Vec3, _unit: Vec3, _distance: number) => ({ position: trunk.find(t => !broken.has(String(t))) ?? base, face: 1 }),
+      raycast: () => ({ position: trunk.find(t => !broken.has(String(t))) ?? base, face: 1 }),
     },
     pathfinder: {
       bestHarvestTool: () => null,

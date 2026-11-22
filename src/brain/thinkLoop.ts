@@ -32,9 +32,12 @@ import { consolidateSleep } from './sleep/sleepConsolidation'
 import { morningStatement } from './sleep/morningRoutine'
 import { bedHours, overworld } from './sleep/sleepTrigger'
 import { Autonomy } from './survival/autonomy'
+import { trainable } from './survival/skills'
 import type { MonitorSink } from '../monitor/types'
+import type { TeamBoard } from './survival/team'
+import type { MemoryRepo } from '../storage/repositories/memoryRepo'
 
-export interface BrainContext { config: Config; log: Logger; clock: Clock; rng: () => number; engine: StateEngine; stateRepo: StateRepo; repo: SleepRepo; stm: ShortTermMemory; providers: Providers; monitor?: MonitorSink }
+export interface BrainContext { config: Config; log: Logger; clock: Clock; rng: () => number; engine: StateEngine; stateRepo: StateRepo; repo: SleepRepo; stm: ShortTermMemory; providers: Providers; monitor?: MonitorSink; team?: TeamBoard; memories?: MemoryRepo }
 const moveActions = new Set<Action>(['FOLLOW_PLAYER', 'SEEK_BED', 'GATHER_BASIC', 'RETREAT_TO_SAFETY'])
 
 export class ThinkLoop {
@@ -58,14 +61,21 @@ export class ThinkLoop {
   private danger = false
   private fastAlarm = false
   private ready = false
-  private idleCooldownUntil = 0
+  private lastUsefulWork = -Infinity
+  private currentJob?: string
   constructor(private readonly bot: Bot, private readonly ctx: BrainContext) {
     this.sensor = new Perception(bot, ctx.config)
-    this.autonomy = new Autonomy(bot, ctx.config, ctx.log, ctx.providers.local)
+    this.autonomy = new Autonomy(bot, ctx.config, ctx.log, ctx.providers.local, ctx.team, ctx.memories, ctx.stm)
   }
   get signal() { return this.life.signal }
   get perception() { return this.frame }
   get live() { return this.ready }
+  get activity() { return this.currentJob }
+
+  private setJob(label?: string) {
+    this.currentJob = label
+    this.ctx.monitor?.update({ activeJob: label ?? null })
+  }
 
   start() {
     if (this.ready || this.life.signal.aborted) return
@@ -74,7 +84,7 @@ export class ThinkLoop {
     this.lastTrace = this.lastSave = 0
     this.lastDecision = undefined
     this.nextTick = 0
-    this.idleCooldownUntil = 0
+    this.lastUsefulWork = -Infinity
     this.record('joined', .25, .3)
     this.timer = setInterval(() => this.tickSafely(), Math.min(250, this.ctx.config.THINK_INTERVAL_MS))
     this.fastTimer = setInterval(() => this.checkImmediate(), 250)
@@ -168,30 +178,16 @@ export class ThinkLoop {
     engine.update(s => {
       s.circadian.day = p.day; s.circadian.timeOfDay = p.timeOfDay; s.circadian.sleeping = p.sleeping
       s.vitals = { health: p.health, food: p.food }
-      const producing = this.active?.action === 'AUTONOMOUS' || this.active?.action === 'EAT' || this.active?.action === 'GATHER_BASIC'
+      const producing = p.at - this.lastUsefulWork < 12_000
       updateNeeds(s, p, elapsed, producing); decayEmotions(s.emotions, elapsed); observePlayers(s, p.players, p.at)
     })
     if (p.players.some(e => e.distance < 6) && p.at - this.lastCompany >= 45_000) {
       this.lastCompany = p.at; this.record('company', .55, .5)
     }
     const s = engine.get(), decision = decide(s, p, config, this.budget)
-    let action = decision.chosen.action
-    if (action === 'IDLE_SOCIAL' && p.players.length === 0 && p.at < this.idleCooldownUntil) {
-      const fallback = decision.candidates.find(c => c.eligible && c.action !== 'IDLE_SOCIAL')
-      if (fallback) action = fallback.action
-    }
-    if (action === 'STOP' && !s.runtime.paused) {
-      const fallback = decision.candidates.find(c => c.eligible && c.action !== 'STOP' && c.action !== 'IDLE_SOCIAL')
-      if (fallback) action = fallback.action
-    }
-    // Boredom override: never stand still longer than a few minutes while healthy and able to work.
-    const bored = s.needs.boredom >= 55
-    const standing = !this.active || (!moveActions.has(this.active.action) && this.active.action !== 'AUTONOMOUS' && this.active.action !== 'EAT')
-    if (bored && standing && !s.runtime.paused && s.needs.safety > config.SAFETY_TRIGGER && p.health > 8 && !s.runtime.following && !p.sleeping) {
-      action = 'AUTONOMOUS'
-      this.budget.defer('AUTONOMOUS', p.at, 0)
-      log.info({ boredom: s.needs.boredom }, 'Boredom override: seeking useful work')
-    }
+    const action = decision.chosen.action
+    const team = this.ctx.team
+    if (team && this.active?.action !== 'AUTONOMOUS') team.report(s.runtime.paused ? 'Paused' : p.sleeping ? 'Sleeping' : this.currentJob ?? action.replaceAll('_', ' ').toLowerCase())
     const danger = s.needs.safety < 40
     if (danger && !this.danger) this.record('danger', -.65, .65, 'RETREAT_TO_SAFETY', this.area())
     this.danger = danger
@@ -200,7 +196,7 @@ export class ThinkLoop {
       top: decision.candidates.slice(0, 3), blocked: decision.candidates.filter(x => !x.eligible).map(x => ({ action: x.action, reasons: x.reasons })) }
     this.ctx.monitor?.update({
       updatedAt: p.at,
-      state: s,
+      state: { ...s, journal: { ...s.journal, players: [] } },
       perception: p,
       activeAction: this.active?.action ?? null,
       thoughts: {
@@ -210,6 +206,7 @@ export class ThinkLoop {
         blocked: decision.candidates.filter(x => !x.eligible).map(x => ({ action: x.action, reasons: x.reasons })),
       },
       events: this.ctx.stm.all().slice(-30),
+      team: team && { id: team.id, peers: team.peers() },
     })
     if (action !== this.lastDecision || p.at - this.lastTrace >= 45_000) { log.info(trace, 'Planner decision'); this.lastDecision = action; this.lastTrace = p.at }
     else log.debug(trace, 'Planner tick')
@@ -231,18 +228,23 @@ export class ThinkLoop {
   }
   private run(action: Action, p: PerceptionFrame, following: string | null) {
     const abort = new AbortController(), life = this.life.signal
-    const signal = AbortSignal.any([abort.signal, life, AbortSignal.timeout(this.ctx.config.ACTION_TIMEOUT_MS)])
+    const { config } = this.ctx
+    const timeBudget = config.ACTION_TIMEOUT_MS + (action === 'AUTONOMOUS' ? config.AUTONOMY_MODEL_TIMEOUT_MS : 0)
+    const signal = AbortSignal.any([abort.signal, life, AbortSignal.timeout(timeBudget)])
     this.progress.reset()
-    if (action === 'IDLE_SOCIAL' && p.players.length === 0) this.idleCooldownUntil = p.at + 10_000
     this.ctx.engine.update(s => { s.runtime.lastAction = action })
+    this.currentJob = undefined
+    this.ctx.monitor?.update({ activeAction: action, activeJob: null, jobSource: null })
     const done = this.act(action, p, following, signal).catch(error => {
       if (abort.signal.aborted || life.aborted) return
       if (action === 'FOLLOW_PLAYER' && signal.aborted) return // planned renewal of a dynamic goal
+      this.setJob(`Blocked: ${errorMessage(error).slice(0, 100)}`)
       this.budget.defer(action, this.time, action === 'SLEEP' || action === 'SEEK_BED' ? 8000 : 2200)
       this.ctx.log.warn({ action, error: errorMessage(error) }, 'Action did not complete')
     }).finally(() => {
       stopBehavior(this.bot)
       this.active = undefined
+      this.ctx.monitor?.update({ activeAction: null })
     })
     this.active = { action, abort, done }
   }
@@ -251,7 +253,9 @@ export class ThinkLoop {
     signal.throwIfAborted()
     switch (action) {
       case 'FOLLOW_PLAYER': if (following) await followPlayer(this.bot, following, this.ctx.config.PERCEPTION_RADIUS, signal); break
-      case 'EAT': if (await eatIfHungry(this.bot, signal)) this.record('ate', .5, .65, action); break
+      case 'EAT':
+        if (await eatIfHungry(this.bot, signal)) { this.record('ate', .5, .65, action); this.lastUsefulWork = this.time }
+        break
       case 'GATHER_BASIC': if (p.forageId !== null && await gatherBasic(this.bot, p.forageId, signal)) this.record('gathered', .35, .5, action); break
       case 'RETREAT_TO_SAFETY': await safetyBehavior(this.bot, p, signal); break
       case 'SEEK_BED': case 'SLEEP': await findBedAndSleep(this.bot, p.beds, action === 'SEEK_BED', signal); break
@@ -260,13 +264,19 @@ export class ThinkLoop {
           this.ctx.engine.update(s => { s.project = project })
           for (const milestone of reached ?? []) this.ctx.stm.record({ at: this.time, day: this.day, kind: 'milestone', valence: .8, intensity: .75, tag: action, milestone })
           this.save()
-        }, signal, label => this.ctx.monitor?.update({ activeJob: label ?? null }))
-        this.ctx.monitor?.update({ activeJob: null })
+        }, signal, label => this.setJob(label), outcome => {
+          if (!trainable(outcome.kind)) return
+          const work = { kind: outcome.kind as 'tree' | 'mine' | 'craft' | 'place' | 'plant' | 'smelt' | 'walk', success: outcome.success, distance: outcome.distance }
+          this.ctx.stm.record({ at: this.time, day: p.day, kind: 'work_outcome', valence: outcome.success ? .4 : -.35,
+            intensity: .5, tag: action, work })
+          if (outcome.success) this.lastUsefulWork = this.time
+        }, source => this.ctx.monitor?.update({ jobSource: source }))
         if (!work) { this.budget.defer(action, this.time, 4000); break }
         if (work.kind === 'mine' || work.kind === 'tree') this.record('gathered', .4, .5, action)
         if (work.kind === 'plant') this.record('gathered', .35, .45, action)
         if (work.kind === 'craft') this.record('crafted', .48, .55, action)
         if (work.kind === 'place') this.record('built', .55, .6, action)
+        this.setJob(`Finished: ${work.label}`)
         break
       }
       case 'IDLE_SOCIAL': await idleHumanizer(this.bot, this.ctx.rng, signal); break
@@ -276,6 +286,7 @@ export class ThinkLoop {
   }
   cancel(reason: string) {
     this.active?.abort.abort(new Error(reason))
+    if (this.active) { this.setJob(); this.ctx.monitor?.update({ jobSource: null }) }
     if (this.bot.pathfinder && this.bot.entity) stopBehavior(this.bot)
     this.ctx.monitor?.note('info', `Action cancelled: ${reason}`)
   }
@@ -289,6 +300,7 @@ export class ThinkLoop {
     if (action !== 'goal') this.cancel(`operator ${action}`)
     if (action === 'play') this.budget.defer('AUTONOMOUS', this.time, 0)
     if (action === 'stop' && this.bot.isSleeping) void this.bot.wake().catch(() => {})
+    if (action === 'stop') this.rest?.advice.abort(new Error('operator stop'))
     if (action === 'sleep') { this.budget.defer('SLEEP', this.time, 0); this.budget.defer('SEEK_BED', this.time, 0) }
     this.record('command', .1, .2); this.save(); this.rethink()
   }
@@ -322,7 +334,8 @@ export class ThinkLoop {
     this.ctx.engine.update(s => { s.circadian.sleeping = false })
     this.record('woke', .4, .5)
     if (this.rest) {
-      this.rest.woke = true; this.rest.advice.abort(new Error('woke up'))
+      // Some servers skip the night before Ollama can answer. The bounded review may finish at dawn.
+      this.rest.woke = true
       this.announce(this.rest)
     }
     this.rethink()

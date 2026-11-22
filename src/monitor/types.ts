@@ -18,6 +18,8 @@ export interface MonitorPatch {
   perception?: PerceptionFrame
   activeAction?: Action | null
   activeJob?: string | null
+  jobSource?: string | null
+  team?: { id: string; peers: Array<{ name: string; activity: string }> }
   thoughts?: MonitorThoughts
   events?: MemoryEvent[]
 }

@@ -12,6 +12,7 @@ export function soulGuard(raw: unknown, state: AgentState, facts: SleepFacts, co
   const parsed = proposalSchema.safeParse(raw)
   if (!parsed.success) return reject('invalid schema, range, or unsafe field')
   const p = parsed.data, next = structuredClone(state)
+  if (source === 'cloud' && (p.lessons !== undefined || p.keepNotes !== undefined)) return reject('cloud cannot write local skills or journal')
   if (source === 'local' && (Object.keys(p.traitDeltas).length || Object.keys(p.valueDeltas).length || p.trustDeltas.length)) return reject('local summarization cannot change profile')
   for (const key of traitKeys) {
     const delta = p.traitDeltas[key] ?? 0

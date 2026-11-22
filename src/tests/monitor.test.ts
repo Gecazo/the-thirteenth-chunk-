@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { parseConfig } from '../config'
 import { startMonitor } from '../monitor/server'
+import { Script } from 'node:vm'
 
 test('monitor serves live snapshot data', async () => {
   const monitor = startMonitor(parseConfig({ MONITOR_ENABLED: 'true', MONITOR_HOST: '127.0.0.1', MONITOR_PORT: '8879' }))
@@ -24,6 +25,8 @@ test('monitor serves live snapshot data', async () => {
     assert.match(html, /SoulBot Monitor/)
     assert.match(html, /Connect now/)
     assert.match(html, /Map \(top-down\)/)
+    assert.match(html, /Curated journal/)
+    assert.doesNotThrow(() => new Script(html.match(/<script>([\s\S]*?)<\/script>/u)![1]!))
   } finally {
     await monitor?.close()
   }

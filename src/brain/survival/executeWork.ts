@@ -4,14 +4,16 @@ import { Vec3 } from 'vec3'
 import { untilAbort } from '../../infra/errors'
 import { delay } from '../../infra/clock'
 import type { SurvivalProject } from '../../types/state'
-import { insideWorkArea, protectedByProject, cellHasEntity, shelterCells, standable, workshopCells } from './site'
+import { insideWorkArea, protectedByProject, cellHasEntity, shelterCells, standable, workshopCells, blueprintCells, roleAccepts } from './site'
 import { faces, isPick, mineable, placementSupports } from './opportunities'
 import { buildMaterials, center, eye, ironOres, isAir, logs, smeltingFuels, type LocalBlock, type Mining, type Work } from './types'
 import { treeTrunk } from '../../behaviors/collectTree'
 import { dangerousBlocks } from '../../bot/perception'
+import { safeFoods } from '../../behaviors/eatIfHungry'
+import type { Logger } from '../../infra/logger'
 
 const reach = 4.2
-const crafts = new Set([...buildMaterials, 'stick', 'crafting_table', 'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'torch', 'bread', 'furnace'])
+const crafts = new Set([...buildMaterials, 'stick', 'crafting_table', 'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'torch', 'bread', 'furnace', 'chest', 'oak_stairs', 'cobblestone_stairs', 'glass', 'glass_pane', 'oak_door', 'spruce_door', 'birch_door'])
 
 // The sync implementation returns a Block plus its hit face, rather than the declared iterator result.
 function rayTo(bot: Bot, from: Vec3, target: Vec3) {
@@ -172,7 +174,7 @@ async function smeltIron(bot: Bot, pos: Vec3, project: SurvivalProject, signal: 
   }
 }
 
-export async function executeWork(bot: Bot, work: Work, project: SurvivalProject, radius: number, signal: AbortSignal, pending: (active: boolean) => void = () => {}) {
+export async function executeWork(bot: Bot, work: Work, project: SurvivalProject, radius: number, signal: AbortSignal, pending: (active: boolean) => void = () => {}, log?: Logger) {
   signal.throwIfAborted()
   if (!insideWorkArea(project.anchor, bot.entity.position, radius + 1)) throw new Error('Bot is outside its work area')
   if (work.kind !== 'craft' && !insideWorkArea(project.anchor, work.pos, radius)) throw new Error('Target is outside work area')
@@ -230,6 +232,37 @@ export async function executeWork(bot: Bot, work: Work, project: SurvivalProject
     return
   }
   if (work.kind === 'smelt') return smeltIron(bot, work.pos, project, signal, pending)
+  if (work.kind === 'store') {
+    const currentWindow = () => bot.currentWindow
+    if (currentWindow()) throw new Error('An inventory window is open')
+    await approach(bot, work.pos, signal)
+    const block = bot.blockAt(work.pos, false)
+    if (!block || !['chest', 'barrel'].includes(block.name) || !canReach(bot, block)) throw new Error('Storage chest is missing or not reachable')
+    signal.throwIfAborted()
+    const opening = bot.openChest(block)
+    void opening.then(window => { if (signal.aborted && currentWindow()?.id === window.id) return window.close() }).catch(() => {})
+    const chest = await untilAbort(opening, signal)
+    try {
+      const keep = new Set(work.keep ?? ['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'bread', 'cooked_beef', 'torch'])
+      const stowed: string[] = []
+      for (const item of bot.inventory.items()) {
+        signal.throwIfAborted()
+        if (keep.has(item.name) || item.name.endsWith('_axe') || item.name.endsWith('_pickaxe') || item.name === 'bread' ||
+          safeFoods.has(item.name) && bot.inventory.count(item.type, null) <= 4) continue
+        const free = chest.items().filter(slot => !slot.name || slot.name === item.name)
+          .reduce((space, slot) => space + (slot.name ? (64 - (slot.count ?? 0)) : 64), 0)
+        if (free < 1) continue
+        const deposited = Math.min(item.count, free)
+        await untilAbort(chest.deposit(item.type, null, deposited), signal)
+        stowed.push(`${item.name} x${deposited}`)
+      }
+      if (!stowed.length) throw new Error('Nothing to store; chest was not useful')
+      log?.info?.({ chest: work.pos, stowed }, 'Stored spare inventory')
+      return
+    } finally {
+      if (currentWindow()?.id === chest.id) await chest.close()
+    }
+  }
   if (work.kind === 'craft') {
     if (!crafts.has(work.name) || bot.currentWindow) throw new Error('Craft is not currently allowed')
     let table: LocalBlock | undefined
@@ -254,10 +287,17 @@ export async function executeWork(bot: Bot, work: Work, project: SurvivalProject
     throw new Error('Craft was not reflected in the inventory')
   }
   if (bot.currentWindow) throw new Error('An inventory window is open')
-  const site = work.purpose === 'shelter' ? project.shelter : project.workshop
+  if (work.kind !== 'place') throw new Error('Unsupported placement job')
+  const blueprint = work.purpose === 'house' || work.purpose === 'mineshaft'
+  const cells: Array<{ pos: Vec3; role: string }> = blueprint ? blueprintCells((work.purpose === 'house' ? project.house : project.mineshaft)!, work.purpose as 'house' | 'mineshaft')
+    : (work.purpose === 'shelter' ? shelterCells(project.shelter!) : workshopCells(project.workshop!)).map(pos => ({ pos, role: 'wall' }))
+  const role = work.role
+  const inCells = cells.some(cell => cell.pos.equals(work.pos))
+  const protectedCell = protectedByProject(project, work.pos)
   const allowed = work.purpose === 'table' || work.purpose === 'furnace'
-    ? work.name === (work.purpose === 'table' ? 'crafting_table' : 'furnace') && standable(bot, work.pos) && !protectedByProject(project, work.pos)
-    : buildMaterials.has(work.name) && site && (work.purpose === 'shelter' ? shelterCells(site) : workshopCells(site)).some(pos => pos.equals(work.pos))
+    ? work.name === (work.purpose === 'table' ? 'crafting_table' : 'furnace') && standable(bot, work.pos) && !protectedCell
+    : inCells && (blueprint ? cells.some(cell => cell.pos.equals(work.pos) && (role ? cell.role === role : true) && roleAccepts(cell.role as never, work.name))
+      : buildMaterials.has(work.name) || work.name === 'crafting_table' || work.name === 'furnace')
   if (!allowed) throw new Error('Placement would touch an unapproved or occupied cell')
   // Clear replaceable nonsolid growth (tall grass, ferns) before validating the cell.
   const occupant = bot.blockAt(work.pos, false)

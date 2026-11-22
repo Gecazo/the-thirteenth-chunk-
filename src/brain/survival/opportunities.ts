@@ -3,7 +3,7 @@ import { Vec3 } from 'vec3'
 import { dangerousBlocks, vec } from '../../bot/perception'
 import type { SurvivalProject } from '../../types/state'
 import { buildMaterials, center, coalOres, ironOres, isAir, logs, planks, smeltingFuels, surface, type LocalBlock, type Travel, type Work } from './types'
-import { findSite, findWorkshopSite, insideWorkArea, protectedByProject, shelterCells, standable, structureComplete, workshopCells } from './site'
+import { findSite, findWorkshopSite, findHouseSite, findMineshaftSite, insideWorkArea, protectedByProject, shelterCells, standable, structureComplete, workshopCells, houseCells, mineshaftCells, roleAccepts, roleBlocksFor } from './site'
 import { treeTrunk } from '../../behaviors/collectTree'
 
 export const faces = [new Vec3(0, 1, 0), new Vec3(0, -1, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1), new Vec3(1, 0, 0), new Vec3(-1, 0, 0)] as const
@@ -135,6 +135,32 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
     const jobs = best.map((pos): Placement => ({ kind: 'place', label: `Build ${purpose} with ${material.name}`, name: material.name, pos, purpose }))
     for (const job of jobs.filter(w => !blocked(w)).slice(0, 2)) add(job, wantsBuild ? 106 : homeDone ? 88 : hasPick ? 94 : 60)
   }
+  const house = project.house
+  if (house) {
+    const blueprint = houseCells(house), shaft = project.mineshaft ? mineshaftCells(project.mineshaft) : []
+    const roleAt = (cell: { pos: Vec3; role: string }) => bot.blockAt(cell.pos, false)?.name ?? 'air'
+    const unfilled = (list: Array<{ pos: Vec3; role: string }>) => list.filter(cell => !roleAccepts(cell.role as never, roleAt(cell)))
+    const pendingHouse = unfilled(blueprint), pendingShaft = unfilled(shaft)
+    const furnish = (cell: { pos: Vec3; role: string }, purpose: 'house' | 'mineshaft'): Work | undefined => {
+      const name = roleBlocksFor(cell.role as never).find(name => number(name) > 0)
+      return name ? { kind: 'furnish', label: `Furnish ${cell.role.replaceAll('_', ' ')} with ${name}`, pos: cell.pos, name, purpose, role: cell.role } : undefined
+    }
+    for (const cell of pendingHouse.filter(cell => cell.pos.y === Math.min(...pendingHouse.map(c => c.pos.y))).slice(0, 2)) {
+      const job = furnish(cell, 'house')
+      if (job && !blocked(job)) add(job, 100)
+    }
+    for (const cell of pendingShaft.filter(cell => cell.pos.y === Math.max(...pendingShaft.map(c => c.pos.y))).slice(0, 1)) {
+      const job = furnish(cell, 'mineshaft')
+      if (job && !blocked(job)) add(job, 96)
+    }
+    if (pendingHouse.length && number('oak_stairs') + number('cobblestone_stairs') < 2) add(availableCraft(bot, 'oak_stairs', project.table ? vec(project.table) : undefined), 99)
+    if (pendingHouse.length && number('chest') < 2) add(availableCraft(bot, 'chest', project.table ? vec(project.table) : undefined), 98)
+  }
+  const storage = project.house ? houseCells(project.house).find(cell => ['chest', 'barrel'].includes(bot.blockAt(cell.pos, false)?.name ?? '')) : undefined
+  if (storage && inventory.length > 20) {
+    const job: Work = { kind: 'store', label: 'Store spare items in chest', pos: storage.pos }
+    if (!blocked(job)) add(job, 92)
+  }
   function station(purpose: 'table' | 'furnace', name: string, use: boolean, priority: number, craftTable?: Vec3): Vec3 | undefined {
     const saved = project[purpose]
     if (saved && insideWorkArea(project.anchor, saved, radius)) {
@@ -192,7 +218,7 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
         // Replant a matching sapling next to the stump to keep forests renewable.
         const sapling = saplingForLog(bot.blockAt(pos, false)!.name)
         const saplingCount = inventory.reduce((n, item) => n + (item.name === sapling ? item.count : 0), 0)
-        if (saplingCount > 0 && trunk.length) {
+        if (saplings.has(sapling) && saplingCount > 0 && trunk.length) {
           const plant = replantSpot(bot, trunk[0]!, project, radius, visited, blocked, sapling)
           if (plant) add(plant, priority + 2)
         }
@@ -221,6 +247,14 @@ export function maybeChooseSite(bot: Bot, project: SurvivalProject, radius: numb
   if (!project.workshop && structureComplete(bot, shelterCells(project.shelter))) {
     const workshop = findWorkshopSite(bot, project, radius)
     if (workshop) return { ...project, workshop }
+  }
+  if (project.workshop && !project.house && structureComplete(bot, workshopCells(project.workshop))) {
+    const house = findHouseSite(bot, project, radius)
+    if (house) return { ...project, house }
+  }
+  if (project.house && !project.mineshaft) {
+    const mineshaft = findMineshaftSite(bot, project, radius)
+    if (mineshaft) return { ...project, mineshaft }
   }
   return project
 }

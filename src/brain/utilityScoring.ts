@@ -42,10 +42,12 @@ export function utility(s: AgentState, p: PerceptionFrame, config: Config, budge
         require(p.players.length > 0, 'no nearby players for social idle')
         parts.baseWeight = 2; parts.emotionModifier = e.curiosity * 2; parts.socialModifier = p.players.length ? 2 : 0; break
       case 'AUTONOMOUS':
-        require(config.AUTONOMY_ENABLED && overworld(p.dimension) && !following && !s.runtime.sleepRequested && !hungry,
-          'survival mode is disabled, outside the Overworld, a manual task is pending, or food should be handled first')
+        require(config.AUTONOMY_ENABLED && overworld(p.dimension) && !following && !s.runtime.sleepRequested,
+          'survival mode is disabled, outside the Overworld, or a manual task is pending')
+        require(!(readyToRest && bed), 'nightly rest takes priority')
+        require(!(hungry && (p.inventory.foodCount || p.forageId !== null)), 'food takes priority')
         parts.baseWeight = 44
-        parts.contextBonus = autonomyBoost + (s.goals.userGoal ? 2 : 0) + n.boredom * .55
+        parts.contextBonus = autonomyBoost + (s.goals.userGoal ? 2 : 0) + n.boredom * .2
         parts.riskPenalty = (100 - n.safety) * .20; break
       case 'PAUSE_AND_REFLECT':
         require(config.REFLECTION_ENABLED && !following && (e.fear > .48 || n.energy < 18), 'reflection disabled or no reflection trigger')

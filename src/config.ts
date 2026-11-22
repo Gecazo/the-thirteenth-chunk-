@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { readFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { parseArgs } from 'node:util'
+import { createHash } from 'node:crypto'
 
 const bool = (fallback: boolean) => z.enum(['true', 'false']).default(String(fallback) as 'true' | 'false').transform(v => v === 'true')
 const int = (fallback: number, min: number, max: number) => z.coerce.number().int().min(min).max(max).default(fallback)
@@ -14,6 +15,10 @@ const url = z.url({ protocol: /^https?$/ }).refine(v => {
 export const playerName = z.string().regex(/^[A-Za-z0-9_]{1,16}$/)
 const instanceName = z.string().regex(/^[a-z0-9_]{1,16}$/, 'Use 1–16 lowercase letters, digits, or underscores for an instance name')
 const instanceSelection = z.object({ SOULBOT_INSTANCE: instanceName.optional() })
+const teamHome = z.string().regex(/^-?\d+,-?\d+,-?\d+$/, 'Use x,y,z with no spaces').transform(text => {
+  const [x = 0, y = 0, z = 0] = text.split(',').map(Number)
+  return { x, y, z }
+}).pipe(z.object({ x: z.number().int().min(-29_999_990).max(29_999_990), y: z.number().int().min(-64).max(317), z: z.number().int().min(-29_999_990).max(29_999_990) }))
 
 const schema = z.object({
   SOULBOT_INSTANCE: instanceName.optional(),
@@ -30,7 +35,9 @@ const schema = z.object({
   OLLAMA_MODEL: z.string().min(1).max(200).default('qwen3.5:4b'), OLLAMA_TIMEOUT_MS: int(30000, 250, 60000),
   OLLAMA_CONTEXT: int(4096, 2048, 16384),
   AUTONOMY_ENABLED: bool(false), AUTONOMY_VISION: bool(true), AUTONOMY_RADIUS: int(28, 12, 48),
-  AUTONOMY_PLAN_INTERVAL_MS: int(7500, 1500, 60000), AUTONOMY_MODEL_TIMEOUT_MS: int(8000, 1000, 20000),
+  AUTONOMY_MODEL_TIMEOUT_MS: int(12000, 1000, 40000),
+  AUTONOMY_REQUIRE_AI: bool(true),
+  TEAM_ID: instanceName.optional(), TEAM_HOME: teamHome.optional(),
   REFLECTION_ENABLED: bool(false),
   MONITOR_ENABLED: bool(true), MONITOR_HOST: z.string().min(1).default('127.0.0.1'), MONITOR_PORT: int(8787, 1, 65535),
   CLOUD_SLEEP_ENABLED: bool(false), CLOUD_PROVIDER: z.enum(['openrouter', 'openai', 'compatible']).default('openrouter'),
@@ -41,6 +48,9 @@ const schema = z.object({
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']).default('info'),
   LOG_PRETTY: bool(true), AUDIT_LOG_SLEEP_DIFFS: bool(true),
 }).superRefine((v, ctx) => {
+  if ((v.TEAM_ID || v.TEAM_HOME) && (!v.TEAM_ID || !v.TEAM_HOME || !v.AUTONOMY_ENABLED)) {
+    ctx.addIssue({ code: 'custom', path: ['TEAM_HOME'], message: 'Shared building requires TEAM_ID, TEAM_HOME=x,y,z, and AUTONOMY_ENABLED=true' })
+  }
   if (v.CLOUD_SLEEP_ENABLED && (!v.CLOUD_API_KEY || !v.CLOUD_BASE_URL.startsWith('https://'))) {
     ctx.addIssue({ code: 'custom', path: ['CLOUD_BASE_URL'], message: 'Enabled cloud sleep requires HTTPS and CLOUD_API_KEY' })
   }
@@ -59,6 +69,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = {}): Config {
   const directory = join('data', 'instances', instance)
   return schema.parse({ ...env, MC_USERNAME: env.MC_USERNAME ?? instance,
     MC_AUTH_CACHE: env.MC_AUTH_CACHE ?? join(directory, 'auth'), STATE_PATH: env.STATE_PATH ?? join(directory, 'soul.md'),
+    MONITOR_PORT: env.MONITOR_PORT ?? String(10000 + createHash('sha256').update(instance).digest().readUInt16BE() % 50000),
   })
 }
 
@@ -73,7 +84,7 @@ export function loadConfig(args = process.argv.slice(2), env = process.env, cwd 
   const { values } = parseArgs({ args, options: { instance: { type: 'string' } } })
   const { SOULBOT_INSTANCE: id } = instanceSelection.parse({ SOULBOT_INSTANCE: values.instance ?? env.SOULBOT_INSTANCE })
   const shared = readEnvFile(join(cwd, '.env'))
-  if (id) for (const key of ['MC_USERNAME', 'MC_AUTH_CACHE', 'STATE_PATH']) delete shared[key]
+  if (id) for (const key of ['MC_USERNAME', 'MC_AUTH_CACHE', 'STATE_PATH', 'MONITOR_PORT']) delete shared[key]
   const profile = id ? readEnvFile(join(cwd, `.env.${id}`)) : {}
   return parseConfig({ ...shared, ...profile, ...env, SOULBOT_INSTANCE: id })
 }

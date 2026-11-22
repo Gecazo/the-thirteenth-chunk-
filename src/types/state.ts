@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { playerName } from '../config'
+import { skillBook } from './skills'
+import { emptyJournal, journalSchema } from './journal'
 
 export const traitKeys = ['curiosity', 'sociability', 'caution', 'patience'] as const
 export const valueKeys = ['kindness', 'prudence', 'helpfulness'] as const
@@ -12,11 +14,12 @@ export const unit = z.number().min(0).max(1)
 export const score = z.number().min(0).max(100)
 export const natural = z.number().int().nonnegative()
 export const blockPoint = z.strictObject({ x: z.number().int().min(-30_000_000).max(30_000_000), y: z.number().int().min(-2048).max(4096), z: z.number().int().min(-30_000_000).max(30_000_000) })
-export const milestones = ['stone_tools', 'home', 'iron_tools', 'workshop'] as const
+export const milestones = ['stone_tools', 'home', 'iron_tools', 'workshop', 'house', 'mineshaft'] as const
 export type Milestone = typeof milestones[number]
-export const milestoneNames: Record<Milestone, string> = { stone_tools: 'Stone tools', home: 'Starter home', iron_tools: 'Iron tools', workshop: 'Workshop' }
+export const milestoneNames: Record<Milestone, string> = { stone_tools: 'Stone tools', home: 'Starter home', iron_tools: 'Iron tools', workshop: 'Workshop', house: 'Furnished house', mineshaft: 'Mineshaft' }
 export const projectSchema = z.strictObject({
   anchor: blockPoint, table: blockPoint.optional(), shelter: blockPoint.optional(), furnace: blockPoint.optional(), workshop: blockPoint.optional(), smelting: z.boolean().optional(),
+  house: blockPoint.optional(), mineshaft: blockPoint.optional(),
   milestones: z.array(z.enum(milestones)).max(milestones.length).refine(v => new Set(v).size === v.length).optional(),
 })
 export type SurvivalProject = z.infer<typeof projectSchema>
@@ -33,6 +36,8 @@ export const stateSchema = z.strictObject({
   goals: z.strictObject({ userGoal: z.string().max(120).nullable(), intentions: z.array(z.enum(focusKeys)).max(3) }),
   circadian: z.strictObject({ day: natural, timeOfDay: natural.max(23999), sleeping: z.boolean(), lastSleepDay: natural.nullable() }),
   project: projectSchema.optional(),
+  skills: skillBook.default({}),
+  journal: journalSchema.default(emptyJournal),
   runtime: z.strictObject({ paused: z.boolean(), following: playerName.nullable(), sleepRequested: z.boolean(), lastAction: z.enum(actionKeys), updatedAt: natural }),
 }).superRefine((state, ctx) => {
   const names = state.social.map(s => s.player.toLowerCase())

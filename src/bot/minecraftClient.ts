@@ -4,12 +4,14 @@ import { playerName } from '../config'
 import { type BrainContext, ThinkLoop } from '../brain/thinkLoop'
 import { replyToChat } from '../brain/dialogue'
 import { retrieve } from '../brain/memory/retrieval'
+import { editPlayerNote, recallContext, recallHistory } from '../brain/memory/journal'
 import type { MemoryRepo } from '../storage/repositories/memoryRepo'
 import type { SocialRepo } from '../storage/repositories/socialRepo'
 import { errorMessage } from '../infra/errors'
 import { renderTopDown } from '../monitor/mapRender'
 import { classifyChat, routeCommand } from './commandRouter'
 import { dangerousBlocks, hostilesNear, vec } from './perception'
+import type { Point } from '../types/decisions'
 
 export interface MinecraftContext extends BrainContext { memories: MemoryRepo; social: SocialRepo }
 
@@ -61,12 +63,26 @@ function wireChat(bot: Bot, ctx: MinecraftContext, loop: ThinkLoop) {
       try {
         const reply = routeCommand({ config: ctx.config, state: () => ctx.engine.get(), perception: () => loop.perception,
           follow: target => loop.manual('follow', target), stop: () => loop.manual('stop'), sleep: () => loop.manual('sleep'), play: () => loop.manual('play'),
-          goal: text => loop.manual('goal', text), rethink: () => loop.rethink(), debug: () => ctx.log.info({ state: ctx.engine.get(), perception: loop.perception }, 'Operator state diagnostic'),
+          goal: text => loop.manual('goal', text), rethink: () => loop.rethink(), debug: () => {
+            const state = ctx.engine.get()
+            state.journal.players = []
+            ctx.log.info({ state, perception: loop.perception }, 'Operator state diagnostic')
+          },
           trust: player => ctx.social.read(player)?.trust,
+          activity: () => loop.activity,
+          recall: query => recallHistory(ctx.engine.get(), ctx.memories.list(), now, query, ctx.stm.all())[0]?.summary.slice(0, 160) ?? 'I found no memory matching that topic.',
+          remember: (player, text) => {
+            const journal = editPlayerNote(ctx.engine.get().journal, player, text)
+            if (!journal) return false
+            const state = ctx.engine.prepare(s => { s.journal = journal })
+            ctx.stateRepo.save(state, ctx.stm.all())
+            ctx.engine.install(state)
+            return true
+          },
           memory: () => {
             const s = ctx.engine.get()
             const top = retrieve(ctx.memories.list(), { topics: s.goals.intentions, mood: s.emotions.joy - s.emotions.fear, now, limit: 1 })[0]
-            return top?.summary ?? `No consolidated memories yet. ${ctx.stm.all().length} recent events in short-term memory.`
+            return s.journal.notes[0]?.text.slice(0, 160) ?? top?.summary.slice(0, 160) ?? `No consolidated memories yet. ${ctx.stm.all().length} recent events in short-term memory.`
           },
         }, sender, text, packet.verified)
         bot.whisper(sender, reply)
@@ -77,8 +93,12 @@ function wireChat(bot: Bot, ctx: MinecraftContext, loop: ThinkLoop) {
     if (conversation || now < nextDialogue || state.circadian.sleeping || state.runtime.paused) return
     nextDialogue = now + 5000
     const signal = loop.signal
-    conversation = replyToChat(text, state, ctx.providers.local, signal).then(reply => {
-      if (reply && !signal.aborted && !bot.isSleeping && !ctx.engine.get().runtime.paused) bot.chat(reply)
+    const recall = recallContext(state, ctx.memories.list(), now, text, auth ? sender : undefined, ctx.stm.all())
+    conversation = replyToChat(text, state, ctx.providers.local, signal, { activity: loop.activity, recall }).then(reply => {
+      if (reply && !signal.aborted && !bot.isSleeping && !ctx.engine.get().runtime.paused) {
+        if (recall.playerNote) bot.whisper(sender, reply)
+        else bot.chat(reply)
+      }
     }).catch(() => {}).finally(() => { conversation = undefined })
   })
 }
@@ -112,8 +132,17 @@ export async function runMinecraft(ctx: MinecraftContext, signal: AbortSignal): 
     clearTimeout(loginTimeout)
     spawnedAt ??= clock.now()
     lastHealth = undefined
+    ctx.team?.identify(bot.username)
     ctx.monitor?.update({ status: 'connected', username: bot.username })
-    ctx.monitor?.setRenderer(() => renderTopDown(bot, config.PERCEPTION_RADIUS))
+    ctx.monitor?.setRenderer(() => {
+      const project = ctx.engine.get().project
+      const outlines: Array<[Point, number, [number, number, number]]> = []
+      if (project?.shelter) outlines.push([project.shelter, 4, [80, 220, 100]])
+      if (project?.workshop) outlines.push([project.workshop, 3, [240, 160, 60]])
+      if (project?.house) outlines.push([project.house, 6, [180, 120, 240]])
+      if (project?.mineshaft) outlines.push([project.mineshaft, 6, [160, 110, 70]])
+      return renderTopDown(bot, config.PERCEPTION_RADIUS, outlines)
+    })
     log.info({ username: bot.username, version: bot.version, dimension: bot.game.dimension }, 'Minecraft bot spawned')
     try { safeMovement(bot, config.PERCEPTION_RADIUS); loop.restart() } catch (err) { log.error({ error: errorMessage(err) }, 'Spawn initialization failed'); end('spawn initialization failed') }
   })
@@ -143,7 +172,7 @@ export async function runMinecraft(ctx: MinecraftContext, signal: AbortSignal): 
     closing = true
     signal.removeEventListener('abort', stop)
     clearTimeout(loginTimeout)
-    await loop.close()
+    try { await loop.close() } finally { ctx.team?.offline() }
   }
   return { connectedMs: spawnedAt === undefined ? 0 : clock.now() - spawnedAt }
 }

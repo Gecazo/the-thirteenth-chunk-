@@ -21,9 +21,16 @@ test('instances isolate defaults from the standalone profile and support per-bot
     assert.equal(birch.MC_USERNAME, 'birch')
     assert.equal(birch.MC_PORT, 25570)
     assert.equal(birch.STATE_PATH, join('data', 'instances', 'birch', 'soul.md'))
+    assert.notEqual(cedar.MONITOR_PORT, birch.MONITOR_PORT)
+    assert.notEqual(cedar.MONITOR_PORT, 8787)
     assert.equal(loadConfig([], {}, dir).STATE_PATH, './old.md')
     assert.throws(() => loadConfig(['--instance', '../cedar'], {}, dir), /instance name/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('team mode requires an explicit build site and survival opt-in', () => {
+  assert.throws(() => parseConfig({ TEAM_ID: 'crew' }), /Shared building/)
+  assert.deepEqual(parseConfig({ TEAM_ID: 'crew', TEAM_HOME: '10,64,-20', AUTONOMY_ENABLED: 'true' }).TEAM_HOME, { x: 10, y: 64, z: -20 })
 })
 
 test('an online instance requires its own configured account', () => {

@@ -11,7 +11,10 @@ import { openSoulFile } from '../storage/soulFile'
 import { parseSoulDocument } from '../storage/soulDocument'
 import { SleepRepo } from '../storage/repositories/sleepRepo'
 import { MemoryRepo } from '../storage/repositories/memoryRepo'
-import { clock, log } from './fixtures'
+import { clock, frame, log } from './fixtures'
+import { learnSkills, skillRank } from '../brain/survival/skills'
+import { Vec3 } from 'vec3'
+import { editPlayerNote, recallContext } from '../brain/memory/journal'
 
 test('soul.md integration accepts gated cloud advice, persists STM, audit and identity, and deduplicates', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'soulbot-test-')), path = join(dir, 'soul.md')
@@ -23,11 +26,12 @@ test('soul.md integration accepts gated cloud advice, persists STM, audit and id
     stm.record({ kind: 'damage', day: 3, at: 1, intensity: .8, valence: -.7, area: 'overworld:1,4,-1' })
     engine.update(s => {
       s.circadian.sleeping = true; s.circadian.day = 3; s.goals.userGoal = 'secret-goal'; s.social = [{ player: 'SecretFriend', trust: .5, lastSeen: 1 }]
+      s.journal = editPlayerNote(s.journal, 'Alex', 'I prefer oak shelters')!
     })
     const ctx = { config, clock, log, engine, stm, repo, providers: {
       local: { async propose() { return { memoryFocus: 'stay_safe' } } },
       cloud: { async propose(prompt: { user: string }) {
-        assert.doesNotMatch(prompt.user, /SecretFriend|secret-goal|overworld|SoulBot/)
+        assert.doesNotMatch(prompt.user, /SecretFriend|secret-goal|overworld|SoulBot|Alex|oak shelters|journalCandidates/)
         engine.update(s => { s.goals.userGoal = 'Operator edit during sleep' })
         return { traitDeltas: { caution: .01 }, trustDeltas: [{ slot: 0, delta: .02 }], intentions: ['stay_safe', 'rest'] }
       } },
@@ -116,4 +120,49 @@ test('waking cancels pending advice but saves fallback; session abort does not c
     const reopened = openSoulFile(path)
     try { assert.equal(reopened.slept(1), true) } finally { reopened.close() }
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('sleep reviews missed nights and saves both a reusable rule and a journal entry across restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'soulbot-skills-')), path = join(dir, 'soul.md')
+  const storage = openSoulFile(path)
+  try {
+    const engine = new StateEngine(undefined, 'SoulBot', clock, log), stm = new ShortTermMemory(20)
+    for (const [success, distance] of [[true, 4], [false, 18]] as const) stm.record({
+      at: 1, day: 4, kind: 'work_outcome', valence: success ? .4 : -.35, intensity: .5, work: { kind: 'tree', success, distance },
+    })
+    engine.update(s => { s.circadian.sleeping = true })
+    const ctx = { config: parseConfig(), clock, log, engine, stm, repo: new SleepRepo(storage), providers: {
+      local: { async propose(prompt: { user: string }) {
+        assert.match(prompt.user, /"kind":"tree","successes":1,"failures":1/)
+        assert.match(prompt.user, /experience:4:tree/)
+        engine.update(s => { s.journal = editPlayerNote(s.journal, 'Alex', 'I prefer oak shelters')! })
+        return { lessons: [{ kind: 'tree', rule: 'nearest' }], keepNotes: ['experience:4:tree'] }
+      } },
+    } }
+    assert.equal((await consolidateSleep(ctx, 5, new AbortController().signal))?.source, 'local')
+    storage.close()
+    const reopened = openSoulFile(path)
+    try {
+      const state = new StateEngine(reopened.load().state, 'SoulBot', clock, log).get()
+      assert.deepEqual(state.skills.tree, { rule: 'nearest', day: 5, successes: 1, failures: 1 })
+      assert.equal(state.journal.day, 5)
+      assert.match(state.journal.notes[0]?.text ?? '', /Tree harvest on day 4/)
+      assert.ok(new MemoryRepo(reopened).list().some(m => m.id === 'experience:4:tree'))
+      assert.equal(recallContext(state, [], clock.now(), 'trees', 'alex').playerNote, 'I prefer oak shelters')
+      assert.equal(recallContext(state, [], clock.now(), 'trees', 'Birch').playerNote, undefined)
+      const job = (x: number) => ({ kind: 'tree' as const, label: 'Harvest tree', pos: new Vec3(x, 64, 0) })
+      assert.ok(skillRank(state.skills, job(4), frame(), 5) > skillRank(state.skills, job(18), frame(), 5))
+      assert.equal(skillRank(state.skills, job(4), frame(), 13), 0)
+    } finally { reopened.close() }
+  } finally { storage.close(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('skill learning rejects unobserved actions, unsupported rules and executable text', () => {
+  const evidence = [{ kind: 'tree' as const, successes: 1, failures: 0, nearSuccesses: 1, farFailures: 0 }]
+  for (const proposal of [
+    [{ kind: 'walk', rule: 'prefer' }], [{ kind: 'tree', rule: 'nearest' }],
+    [{ kind: 'tree', rule: 'prefer', code: 'run()' }],
+  ]) assert.equal(learnSkills(proposal, {}, evidence, 4), null)
+  assert.deepEqual(learnSkills([{ kind: 'tree', rule: 'prefer' }, { kind: 'tree', rule: 'defer' }], {}, evidence, 4),
+    { tree: { rule: 'prefer', day: 4, successes: 1, failures: 0 } })
 })
