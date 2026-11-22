@@ -174,7 +174,7 @@ test('stopping a tree job cancels the active dig without touching the rest of th
   const dug: Vec3[] = []
   let stopped = 0
   const bot = {
-    entity: { position: origin }, heldItem: null, canDigBlock: () => true,
+    entity: { position: origin }, heldItem: null, canDigBlock: () => true, inventory: { items: () => [] },
     blockAt: (p: Vec3) => ({ position: p, canHarvest: () => true,
       name: p.equals(base.offset(0, -1, 0)) ? 'grass_block'
         : p.x === base.x && p.z === base.z && p.y >= 64 && p.y <= 67 ? 'oak_log'
@@ -184,6 +184,7 @@ test('stopping a tree job cancels the active dig without touching the rest of th
     lookAt: async () => {}, stopDigging: () => { stopped++ },
     dig: async ({ position }: { position: Vec3 }) => { dug.push(position); abort.abort(new Error('operator stop')) },
   } as unknown as Bot
+  // Tree harvesting needs no tool, so the dig starts immediately with a bare hand.
   await assert.rejects(executeWork(bot, { kind: 'tree', label: 'Tree', pos: base }, { anchor }, 28, abort.signal), /operator stop/)
   assert.deepEqual(dug, [base])
   assert.equal(stopped, 1)

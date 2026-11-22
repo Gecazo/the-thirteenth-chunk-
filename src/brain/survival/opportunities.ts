@@ -212,6 +212,7 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
     if (woodOnHand < 4 && (plankCount < 5 || (buildingOpen && plankCount < 16))) {
       const treeJob = (pos: Vec3): Work => ({ kind: 'tree', label: 'Harvest reachable tree trunk', pos })
       const priority = plankCount < 4 && !woodOnHand ? 90 : 64
+      // Offer any wood type: oak, birch, spruce, acacia, jungle... whatever is nearby.
       for (const pos of candidates(bot, logs, search, b => !blocked(treeJob(b.position)) && !!treeTrunk(bot, b.position, project, radius).length)) {
         const trunk = treeTrunk(bot, pos, project, radius)
         add(treeJob(pos), priority + 4)
@@ -223,7 +224,14 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
           if (plant) add(plant, priority + 2)
         }
       }
+      // Standalone exposed logs (fallen trunks, partial canopies) without a full trunk scan.
       suggestMine(logs, priority)
+    } else if (plankCount < 14 && buildingOpen) {
+      // Wood is the gating material for building; prefer any nearby trunk over stone.
+      const treeJob = (pos: Vec3): Work => ({ kind: 'tree', label: 'Harvest reachable tree trunk', pos })
+      for (const pos of candidates(bot, logs, search, b => !blocked(treeJob(b.position)) && !!treeTrunk(bot, b.position, project, radius).length)) {
+        add(treeJob(pos), 66)
+      }
     }
     const cobble = number('cobblestone')
     if (hasPick && (cobble < 8 || (buildingOpen && cobble < 14))) {

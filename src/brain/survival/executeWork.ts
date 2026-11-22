@@ -111,10 +111,16 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
   if (!logs.has(work.name)) {
     if (!tool || !isPick(tool.name) || !ready.canHarvest(tool.type)) tool = bot.inventory.items().find(i => isPick(i.name) && ready.canHarvest(i.type)) ?? null
     if (!tool) throw new Error('No suitable pickaxe')
-  } else if (!tool?.name.endsWith('_axe')) tool = null
+  } else {
+    // Any wood type works: prefer an axe for speed, but a bare hand is always acceptable.
+    tool ??= bot.inventory.items().find(i => i.name.endsWith('_axe') && ready.canHarvest(i.type)) ?? null
+  }
   if (tool) await untilAbort(bot.equip(tool, 'hand'), signal)
   const block = check()
-  if (!canReach(bot, block) || !bot.canDigBlock(block) || !block.canHarvest(bot.heldItem?.type ?? null)) throw new Error('Resource is not harvestable from here')
+  // Logs need no tool: any hand can break them. The pickaxe check applies to stone/ore only.
+  const insufficient = !canReach(bot, block) || !bot.canDigBlock(block) ||
+    (!logs.has(work.name) && !block.canHarvest(bot.heldItem?.type ?? null))
+  if (insufficient) throw new Error('Resource is not harvestable from here')
   const stop = () => bot.stopDigging()
   signal.throwIfAborted()
   await untilAbort(bot.lookAt(center(block.position), true), signal)

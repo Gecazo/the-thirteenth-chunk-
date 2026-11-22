@@ -39,8 +39,8 @@ function safeMovement(bot: Bot, radius: number) {
     const near = threats.slice(0, 8).some(mob => block.position.distanceTo(vec(mob.position)) < Math.min(4, mob.distance - .4))
     return near ? 100 : 0
   })
-  bot.pathfinder.thinkTimeout = 1300
-  bot.pathfinder.tickTimeout = 16
+  bot.pathfinder.thinkTimeout = 2600
+  bot.pathfinder.tickTimeout = 40
   bot.pathfinder.setMovements(moves)
 }
 
