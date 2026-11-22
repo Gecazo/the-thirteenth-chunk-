@@ -27,15 +27,18 @@ const seesCenter = (bot: Bot, from: Vec3, pos: Vec3) => Boolean(rayTo(bot, from,
 const canReach = (bot: Bot, block: LocalBlock) => seesCenter(bot, eye(bot), block.position)
 
 // mineflayer's bot.dig() sweep-checks the block's whole collision box against the view ray,
-// so an exact hit on the block center is not required. Accept any ray stop inside the
-// target voxel or within a hair of it (adjacent hits sweep into the box). The final
-// authority is bot.canDigBlock, which measures 5.1 from the eye.
+// so an exact hit on the block center is not required. Accept when the ray stops at the
+// target itself or in a directly adjacent voxel (hole rims occlude the exact center line of
+// a stone sitting in a 1-deep pit, yet the dig still lands). The final authority is
+// bot.canDigBlock, which measures 5.1 from the eye.
 function canDigFromHere(bot: Bot, block: LocalBlock): boolean {
   const from = eye(bot), target = center(block.position)
   const offset = target.minus(from), distance = offset.norm()
   if (distance > 5.05) return false
   const hit = bot.world.raycast(from, offset.unit(), distance + .05) as { position?: Vec3 } | null
-  return Boolean(hit?.position) && hit!.position!.distanceTo(target) <= 1.01
+  if (!hit?.position) return false
+  const delta = hit.position.minus(block.position)
+  return Math.abs(delta.x) <= 1 && Math.abs(delta.y) <= 1 && Math.abs(delta.z) <= 1
 }
 const pickupOffsets = [new Vec3(0, 0, 0), new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1), new Vec3(1, 0, 1), new Vec3(-1, 0, 1), new Vec3(1, 0, -1), new Vec3(-1, 0, -1)]
 
@@ -116,9 +119,10 @@ async function approach(bot: Bot, pos: Vec3, signal: AbortSignal) {
     const goal = new GoalForInteraction(bot, pos, from.y - bot.entity.position.y, (_feet, eyes) => seesCenter(bot, eyes, pos))
     await goto(bot, goal, signal)
   } catch (error) {
-    // In dense forest the exact line-of-sight goal can exhaust the search budget.
-    // Simply getting within arm's reach is enough for the dig sweep-check to succeed.
-    if (errorMessage(error).includes('Took to long')) {
+    // In dense forest the exact line-of-sight goal can exhaust the search budget or be
+    // unreachable from every standable cell (hole rims). Simply getting within arm's
+    // reach is enough for the dig sweep-check to succeed.
+    if (errorMessage(error).includes('Took to long') || errorMessage(error).includes('No path')) {
       await goto(bot, new goals.GoalNear(pos.x, pos.y, pos.z, 2), signal)
       return
     }
@@ -151,7 +155,11 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
   const diggable = async () => {
     const block = check()
     if (!canDigFromHere(bot, block) || !bot.canDigBlock(block)) {
-      try { await approach(bot, block.position, signal) } catch { /* keep existing checks */ }
+      // Second chance: step into a cell adjacent to the block's own X/Z columns (stone
+      // under a hole rim is only diggable from inside the pit itself).
+      try { await approach(bot, block.position, signal) } catch {
+        await goto(bot, new goals.GoalNear(block.position.x, block.position.y, block.position.z, 1), signal)
+      }
     }
     const target = check()
     return canDigFromHere(bot, target) && bot.canDigBlock(target) ? target : null
