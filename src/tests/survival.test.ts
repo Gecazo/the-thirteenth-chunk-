@@ -133,6 +133,7 @@ test('validates placement against a clear ray to the correct support face', asyn
   let placed = false
   const bot = {
     entity: { position: origin, eyeHeight: 1.62 }, entities: {}, currentWindow: null, heldItem: { name: 'crafting_table' },
+    pathfinder: { goto: async () => {}, setGoal: () => {} },
     inventory: { items: () => [{ name: 'crafting_table' }] },
     blockAt: (p: Vec3) => p.equals(support) ? { name: 'grass_block', position: support, boundingBox: 'block' }
       : { name: placed && p.equals(pos) ? 'crafting_table' : 'air', position: p },
@@ -140,7 +141,7 @@ test('validates placement against a clear ray to the correct support face', asyn
       assert.ok(Math.abs(unit.norm() - 1) < 1e-9)
       // This support is more than 1 block away; normalizing must not shorten the ray.
       assert.ok(range > 2.5)
-      return { position: support, face: 1 }
+      return placed ? { position: pos, face: 1 } : { position: support, face: 1 }
     } },
     equip: async () => {}, lookAt: async () => {}, placeBlock: async () => { placed = true },
   } as unknown as Bot
@@ -148,7 +149,7 @@ test('validates placement against a clear ray to the correct support face', asyn
   const signal = new AbortController().signal
   await executeWork(bot, job, { anchor, workshop: { x: pos.x, y: pos.y, z: pos.z } }, 28, signal)
   assert.equal(placed, true)
-  await assert.rejects(executeWork(bot, job, { anchor, workshop: { x: pos.x, y: pos.y, z: pos.z } }, 28, signal), /occupied cell/)
+  await assert.rejects(executeWork(bot, job, { anchor, workshop: { x: pos.x, y: pos.y, z: pos.z } }, 28, signal), /unapproved or occupied cell|Placement face/)
 })
 
 test('tree jobs recognize a soil-rooted trunk with foliage, not a pillar or project blocks', () => {

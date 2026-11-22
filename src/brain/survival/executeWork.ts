@@ -6,13 +6,15 @@ import { delay } from '../../infra/clock'
 import type { SurvivalProject } from '../../types/state'
 import { insideWorkArea, protectedByProject, cellHasEntity, shelterCells, standable, workshopCells, blueprintCells, roleAccepts } from './site'
 import { faces, isPick, mineable, placementSupports } from './opportunities'
-import { buildMaterials, center, eye, ironOres, isAir, logs, smeltingFuels, type LocalBlock, type Mining, type Work } from './types'
+import { buildMaterials, center, eye, ironOres, isAir, logs, smeltingFuels, soilBlocks, type LocalBlock, type Mining, type Work } from './types'
 import { treeTrunk } from '../../behaviors/collectTree'
 import { dangerousBlocks } from '../../bot/perception'
 import { safeFoods } from '../../behaviors/eatIfHungry'
 import type { Logger } from '../../infra/logger'
 
 const reach = 4.2
+/** mineflayer canDigBlock measures from the eye and allows 5.1; stay inside that with a margin. */
+const digRange = 4.8
 const crafts = new Set([...buildMaterials, 'stick', 'crafting_table', 'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'torch', 'bread', 'furnace', 'chest', 'oak_stairs', 'cobblestone_stairs', 'glass', 'glass_pane', 'oak_door', 'spruce_door', 'birch_door'])
 
 // The sync implementation returns a Block plus its hit face, rather than the declared iterator result.
@@ -24,11 +26,14 @@ function rayTo(bot: Bot, from: Vec3, target: Vec3) {
 
 const seesCenter = (bot: Bot, from: Vec3, pos: Vec3) => Boolean(rayTo(bot, from, center(pos))?.position?.equals(pos))
 const canReach = (bot: Bot, block: LocalBlock) => seesCenter(bot, eye(bot), block.position)
+const diggableFromHere = (bot: Bot, block: LocalBlock) =>
+  center(block.position).distanceTo(eye(bot)) <= digRange && canReach(bot, block)
 const pickupOffsets = [new Vec3(0, 0, 0), new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1), new Vec3(1, 0, 1), new Vec3(-1, 0, 1), new Vec3(1, 0, -1), new Vec3(-1, 0, -1)]
 
 function expectedDrops(name: string): Set<string> {
   const result = new Set([name])
   if (name === 'stone') result.add('cobblestone')
+  if (name === 'grass_block') result.add('dirt')
   if (name.endsWith('coal_ore')) result.add('coal')
   if (ironOres.has(name)) result.add('raw_iron')
   return result
@@ -77,7 +82,14 @@ class GoalForInteraction extends goals.Goal {
 
 async function goto(bot: Bot, goal: goals.Goal, signal: AbortSignal) {
   signal.throwIfAborted()
-  try { await untilAbort(bot.pathfinder.goto(goal), signal) } finally { bot.pathfinder.setGoal(null) }
+  if (!bot.pathfinder) throw new Error('Pathfinder is unavailable')
+  // Dense forest and long detours need more search budget than the client default.
+  const previous = bot.pathfinder.thinkTimeout
+  bot.pathfinder.thinkTimeout = Math.max(previous ?? 0, 9000)
+  try { await untilAbort(bot.pathfinder.goto(goal), signal) } finally {
+    bot.pathfinder.setGoal(null)
+    if (previous !== undefined) bot.pathfinder.thinkTimeout = previous
+  }
   signal.throwIfAborted()
 }
 
@@ -108,7 +120,7 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
   if (!rooted) await approach(bot, work.pos, signal)
   const ready = check()
   let tool = bot.pathfinder.bestHarvestTool(ready)
-  if (!logs.has(work.name)) {
+  if (!logs.has(work.name) && !soilBlocks.has(work.name)) {
     if (!tool || !isPick(tool.name) || !ready.canHarvest(tool.type)) tool = bot.inventory.items().find(i => isPick(i.name) && ready.canHarvest(i.type)) ?? null
     if (!tool) throw new Error('No suitable pickaxe')
   } else {
@@ -119,11 +131,11 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
   // Re-approach after look-at: the ray to a high log can be flaky from one angle.
   const diggable = async () => {
     const block = check()
-    if (!canReach(bot, block) || !bot.canDigBlock(block)) {
+    if (!diggableFromHere(bot, block) || !bot.canDigBlock(block)) {
       try { await approach(bot, block.position, signal) } catch { /* keep existing checks */ }
     }
     const target = check()
-    return canReach(bot, target) && bot.canDigBlock(target) ? target : null
+    return diggableFromHere(bot, target) && bot.canDigBlock(target) ? target : null
   }
   let block = await diggable()
   if (!block) throw new Error('Resource is not harvestable from here')
@@ -301,23 +313,39 @@ export async function executeWork(bot: Bot, work: Work, project: SurvivalProject
   }
   if (bot.currentWindow) throw new Error('An inventory window is open')
   if (work.kind !== 'place') throw new Error('Unsupported placement job')
+  // A bed is two blocks long and can orient away from the primary cell, so the
+  // placed block may land in a horizontal neighbor; accept either result.
+  const isBed = work.name.endsWith('_bed')
+  const bedCellOk = (p: Vec3) => {
+    const ground = bot.blockAt(p.offset(0, -1, 0), false)
+    return ground && ground.boundingBox === 'block' && !dangerousBlocks.has(ground.name) && isAir(bot.blockAt(p, false)?.name)
+  }
   const blueprint = work.purpose === 'house' || work.purpose === 'mineshaft'
   const cells: Array<{ pos: Vec3; role: string }> = blueprint ? blueprintCells((work.purpose === 'house' ? project.house : project.mineshaft)!, work.purpose as 'house' | 'mineshaft')
     : (work.purpose === 'shelter' ? shelterCells(project.shelter!) : workshopCells(project.workshop!)).map(pos => ({ pos, role: 'wall' }))
   const role = work.role
   const inCells = cells.some(cell => cell.pos.equals(work.pos))
   const protectedCell = protectedByProject(project, work.pos)
-  const allowed = work.purpose === 'table' || work.purpose === 'furnace'
-    ? work.name === (work.purpose === 'table' ? 'crafting_table' : 'furnace') && standable(bot, work.pos) && !protectedCell
-    : inCells && (blueprint ? cells.some(cell => cell.pos.equals(work.pos) && (role ? cell.role === role : true) && roleAccepts(cell.role as never, work.name))
-      : buildMaterials.has(work.name) || work.name === 'crafting_table' || work.name === 'furnace')
+  const allowed = isBed
+    ? bedCellOk(work.pos) && faces.slice(2).some(face => bedCellOk(work.pos.plus(face))) && !protectedCell
+    : work.purpose === 'table' || work.purpose === 'furnace'
+      ? work.name === (work.purpose === 'table' ? 'crafting_table' : 'furnace') && standable(bot, work.pos) && !protectedCell
+      : inCells && (blueprint ? cells.some(cell => cell.pos.equals(work.pos) && (role ? cell.role === role : true) && roleAccepts(cell.role as never, work.name))
+        : buildMaterials.has(work.name) || work.name === 'crafting_table' || work.name === 'furnace')
   if (!allowed) throw new Error('Placement would touch an unapproved or occupied cell')
   // Clear replaceable nonsolid growth (tall grass, ferns) before validating the cell.
-  const occupant = bot.blockAt(work.pos, false)
-  if (!isAir(occupant?.name) && occupant?.boundingBox === 'empty') {
-    await untilAbort(bot.lookAt(center(occupant.position), true), signal)
-    await untilAbort(bot.dig(occupant, 'ignore'), signal)
-    if (!isAir(bot.blockAt(work.pos, false)?.name)) throw new Error('Placement cell could not be cleared of growth')
+  const clearCell = async (cell: Vec3) => {
+    const occupant = bot.blockAt(cell, false)
+    if (!isAir(occupant?.name) && occupant?.boundingBox === 'empty') {
+      await untilAbort(bot.lookAt(center(occupant.position), true), signal)
+      await untilAbort(bot.dig(occupant, 'ignore'), signal)
+      if (!isAir(bot.blockAt(cell, false)?.name)) throw new Error('Placement cell could not be cleared of growth')
+    }
+  }
+  await clearCell(work.pos)
+  if (isBed) {
+    // The bed extends in the facing direction; keep every neighbor cell clear.
+    for (const face of faces.slice(2)) await clearCell(work.pos.plus(face))
   }
   if (!isAir(bot.blockAt(work.pos, false)?.name)) throw new Error('Placement would touch an unapproved or occupied cell')
   const supports = placementSupports(bot, work.pos)
@@ -359,7 +387,10 @@ export async function executeWork(bot: Bot, work: Work, project: SurvivalProject
     const still = currentReference()
     if (!still || !still.block.position.equals(target.block.position)) continue
     await untilAbort(bot.placeBlock(target.block, target.face), signal)
-    if (bot.blockAt(work.pos, false)?.name === work.name) return
+    // A bed may orient into a horizontal neighbor instead of the primary cell.
+    if (isBed
+      ? [work.pos, ...faces.slice(2).map(face => work.pos.plus(face))].some(cell => bot.blockAt(cell, false)?.name.endsWith('_bed'))
+      : bot.blockAt(work.pos, false)?.name === work.name) return
   }
   throw new Error('Placement face or destination changed')
 }

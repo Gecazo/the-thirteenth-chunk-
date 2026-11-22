@@ -15,3 +15,6 @@ data/
 
 # Bundled runtime/JDK and server binaries — download via BUILD guide instead
 /local-server/
+
+# local share archives
+soulbot-share.*

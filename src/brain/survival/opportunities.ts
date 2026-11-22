@@ -10,6 +10,15 @@ export const faces = [new Vec3(0, 1, 0), new Vec3(0, -1, 0), new Vec3(0, 0, 1), 
 const ores = new Set(['stone', ...coalOres, ...ironOres])
 export const isPick = (name: string) => /^(wooden|stone|iron|golden|diamond|netherite)_pickaxe$/.test(name)
 
+export function placementSupports(bot: Bot, pos: Vec3) {
+  return faces.flatMap(face => {
+    const block = bot.blockAt(pos.minus(face), false)
+    // Do not use interactable blocks as a placement support.
+    return block && (surface.has(block.name) || buildMaterials.has(block.name)) ? [{ block, face }] : []
+  })
+}
+
+/** Standalone soil-dig eligibility: exposed soft blocks the bot can dig with a bare hand. */
 export function diggableSoil(bot: Bot, block: LocalBlock, project: SurvivalProject, radius: number): boolean {
   const pos = block.position, feet = bot.entity.position.floored()
   if (!soilBlocks.has(block.name) || !insideWorkArea(project.anchor, pos, radius) || pos.y < feet.y - 2) return false
@@ -17,14 +26,6 @@ export function diggableSoil(bot: Bot, block: LocalBlock, project: SurvivalProje
   if (protectedByProject(project, pos)) return false
   if (faces.some(face => dangerousBlocks.has(bot.blockAt(pos.plus(face), false)?.name ?? ''))) return false
   return faces.some(face => isAir(bot.blockAt(pos.plus(face), false)?.name))
-}
-
-export function placementSupports(bot: Bot, pos: Vec3) {
-  return faces.flatMap(face => {
-    const block = bot.blockAt(pos.minus(face), false)
-    // Do not use interactable blocks as a placement support.
-    return block && (surface.has(block.name) || buildMaterials.has(block.name)) ? [{ block, face }] : []
-  })
 }
 
 export function mineable(bot: Bot, block: LocalBlock, project: SurvivalProject, radius: number): boolean {
@@ -39,6 +40,10 @@ export function mineable(bot: Bot, block: LocalBlock, project: SurvivalProject, 
       if (bot.blockAt(pos.offset(edge.x, dy, edge.z), false)?.name.endsWith('_leaves')) return true
     }
     return false
+  }
+  if (soilBlocks.has(block.name)) {
+    // Easy surface dig: exposed like ores; covers dirt, sand, gravel and friends.
+    return faces.slice(2).some(face => isAir(bot.blockAt(pos.plus(face), false)?.name))
   }
   if (!ores.has(block.name)) return false
   // A surface face must be exposed; never start a tunnel or remove a floor by mining down.
@@ -263,13 +268,6 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
     }
     if (stoneOrBetter && ironNeed && rawIron + ingots < 3 && !project.smelting) suggestMine(ironOres, 112, true)
     if (hasPick && number('coal') < 4) suggestMine(coalOres, ironNeed && (rawIron > 0 || project.smelting) && !hasFuel ? 117 : wantsTools ? 83 : 52, true)
-    // Idle-breaker: easy bare-hand soil digging when nothing else is executable nearby.
-    if (!woodVisible && inventory.length < 30) {
-      for (const pos of candidates(bot, soilBlocks, search, block => diggableSoil(bot, block, project, radius))) {
-        const block = bot.blockAt(pos, false)
-        if (block) add({ kind: 'mine', label: `Dig ${block.name}`, name: block.name, pos: block.position }, 30)
-      }
-    }
   }
   for (const work of explorations.filter(w => !blocked(w)).slice(0, 3)) add(work, 24)
   choices.sort((a, b) => b.priority - a.priority)
