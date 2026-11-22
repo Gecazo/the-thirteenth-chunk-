@@ -8,6 +8,8 @@ export const surface = new Set(['grass_block', 'dirt', 'coarse_dirt', 'podzol', 
 export const buildMaterials = new Set([...planks, 'cobblestone'])
 export const ironOres = new Set(['iron_ore', 'deepslate_iron_ore'])
 export const coalOres = new Set(['coal_ore', 'deepslate_coal_ore'])
+/** Easy bare-hand dig targets: keep the bot productive when wood/stone paths are blocked. */
+export const soilBlocks = new Set(['dirt', 'grass_block', 'coarse_dirt', 'podzol', 'sand', 'red_sand', 'gravel'])
 export const smeltingFuels = ['coal', 'charcoal', ...planks]
 export const isAir = (name?: string) => name === 'air' || name === 'cave_air' || name === 'void_air'
 export const center = (p: Vec3) => p.offset(.5, .5, .5)

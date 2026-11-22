@@ -2,13 +2,22 @@ import type { Bot } from 'mineflayer'
 import { Vec3 } from 'vec3'
 import { dangerousBlocks, vec } from '../../bot/perception'
 import type { SurvivalProject } from '../../types/state'
-import { buildMaterials, center, coalOres, ironOres, isAir, logs, planks, smeltingFuels, surface, type LocalBlock, type Travel, type Work } from './types'
+import { buildMaterials, center, coalOres, ironOres, isAir, logs, planks, smeltingFuels, soilBlocks, surface, type LocalBlock, type Travel, type Work } from './types'
 import { findSite, findWorkshopSite, findHouseSite, findMineshaftSite, insideWorkArea, protectedByProject, shelterCells, standable, structureComplete, workshopCells, houseCells, mineshaftCells, roleAccepts, roleBlocksFor } from './site'
 import { treeTrunk } from '../../behaviors/collectTree'
 
 export const faces = [new Vec3(0, 1, 0), new Vec3(0, -1, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1), new Vec3(1, 0, 0), new Vec3(-1, 0, 0)] as const
 const ores = new Set(['stone', ...coalOres, ...ironOres])
 export const isPick = (name: string) => /^(wooden|stone|iron|golden|diamond|netherite)_pickaxe$/.test(name)
+
+export function diggableSoil(bot: Bot, block: LocalBlock, project: SurvivalProject, radius: number): boolean {
+  const pos = block.position, feet = bot.entity.position.floored()
+  if (!soilBlocks.has(block.name) || !insideWorkArea(project.anchor, pos, radius) || pos.y < feet.y - 2) return false
+  if (feet.x === pos.x && feet.z === pos.z && pos.y <= feet.y) return false
+  if (protectedByProject(project, pos)) return false
+  if (faces.some(face => dangerousBlocks.has(bot.blockAt(pos.plus(face), false)?.name ?? ''))) return false
+  return faces.some(face => isAir(bot.blockAt(pos.plus(face), false)?.name))
+}
 
 export function placementSupports(bot: Bot, pos: Vec3) {
   return faces.flatMap(face => {
@@ -122,6 +131,9 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
   const ingots = number('iron_ingot'), rawIron = number('raw_iron')
   const hasFuel = smeltingFuels.some(name => number(name) > 0)
   const explorations = exploreOptions(bot, project, radius, visited)
+  // Wood availability decides whether soil-digging fillers are worth offering.
+  const woodVisible = candidates(bot, logs, Math.min(22, radius), block => mineable(bot, block, project, radius)).length > 0 ||
+    candidates(bot, logs, Math.min(22, radius), b => treeTrunk(bot, b.position, project, radius).length > 0).length > 0
 
   if (plankCount < (buildingOpen ? 14 : 5)) for (const item of inventory.filter(item => logs.has(item.name)).slice(0, 2)) {
     add(availableCraft(bot, item.name.replace(/_log$/u, '_planks')), plankCount < 4 ? 102 : 68)
@@ -160,6 +172,16 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
   if (storage && inventory.length > 20) {
     const job: Work = { kind: 'store', label: 'Store spare items in chest', pos: storage.pos }
     if (!blocked(job)) add(job, 92)
+  }
+  const shelterOrigin = project.shelter
+  const planksOrCobble = new Set([...planks, 'cobblestone'])
+  // Bed goes on the shelter floor inside; walls are build material, floors are left intact.
+  const bedInShelter = shelterOrigin ? [...Array(2)].flatMap((_, dx) => [...Array(2)].map((_, dz) => vec(shelterOrigin).offset(1 + dx, 1, 1 + dz)))
+    .find(pos => isAir(bot.blockAt(pos, false)?.name) && planksOrCobble.has(bot.blockAt(pos.offset(0, -1, 0), false)?.name ?? '')) : undefined
+  const heldBed = bot.inventory.items().find(item => item.name.endsWith('_bed'))
+  if (heldBed && bedInShelter) {
+    const job: Work = { kind: 'place', label: 'Place own bed in shelter', pos: bedInShelter, name: heldBed.name, purpose: 'shelter' }
+    if (!blocked(job)) add(job, 113)
   }
   function station(purpose: 'table' | 'furnace', name: string, use: boolean, priority: number, craftTable?: Vec3): Vec3 | undefined {
     const saved = project[purpose]
@@ -226,11 +248,13 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
       }
       // Standalone exposed logs (fallen trunks, partial canopies) without a full trunk scan.
       suggestMine(logs, priority)
-    } else if (plankCount < 14 && buildingOpen) {
-      // Wood is the gating material for building; prefer any nearby trunk over stone.
-      const treeJob = (pos: Vec3): Work => ({ kind: 'tree', label: 'Harvest reachable tree trunk', pos })
-      for (const pos of candidates(bot, logs, search, b => !blocked(treeJob(b.position)) && !!treeTrunk(bot, b.position, project, radius).length)) {
-        add(treeJob(pos), 66)
+    }
+    // When no wood/stone job is being offered right now, keep the bot's hands busy
+    // with bare-hand soil digging instead of standing still.
+    if (!woodVisible && inventory.length < 30) {
+      for (const pos of candidates(bot, soilBlocks, search, block => diggableSoil(bot, block, project, radius))) {
+        const block = bot.blockAt(pos, false)
+        if (block) add({ kind: 'mine', label: `Dig ${block.name}`, name: block.name, pos: block.position }, 30)
       }
     }
     const cobble = number('cobblestone')
@@ -239,6 +263,13 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
     }
     if (stoneOrBetter && ironNeed && rawIron + ingots < 3 && !project.smelting) suggestMine(ironOres, 112, true)
     if (hasPick && number('coal') < 4) suggestMine(coalOres, ironNeed && (rawIron > 0 || project.smelting) && !hasFuel ? 117 : wantsTools ? 83 : 52, true)
+    // Idle-breaker: easy bare-hand soil digging when nothing else is executable nearby.
+    if (!woodVisible && inventory.length < 30) {
+      for (const pos of candidates(bot, soilBlocks, search, block => diggableSoil(bot, block, project, radius))) {
+        const block = bot.blockAt(pos, false)
+        if (block) add({ kind: 'mine', label: `Dig ${block.name}`, name: block.name, pos: block.position }, 30)
+      }
+    }
   }
   for (const work of explorations.filter(w => !blocked(w)).slice(0, 3)) add(work, 24)
   choices.sort((a, b) => b.priority - a.priority)
