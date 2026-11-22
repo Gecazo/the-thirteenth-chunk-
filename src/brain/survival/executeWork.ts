@@ -120,9 +120,10 @@ async function approach(bot: Bot, pos: Vec3, signal: AbortSignal) {
     await goto(bot, goal, signal)
   } catch (error) {
     // In dense forest the exact line-of-sight goal can exhaust the search budget or be
-    // unreachable from every standable cell (hole rims). Simply getting within arm's
-    // reach is enough for the dig sweep-check to succeed.
-    if (errorMessage(error).includes('Took to long') || errorMessage(error).includes('No path')) {
+    // unreachable from every standable cell (hole rims). Getting within arm's reach is
+    // enough for the dig sweep-check to succeed.
+    const message = errorMessage(error)
+    if (message.includes('Took to long') || message.includes('No path')) {
       await goto(bot, new goals.GoalNear(pos.x, pos.y, pos.z, 2), signal)
       return
     }

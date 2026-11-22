@@ -61,13 +61,13 @@ export function workKey(w: Work): string {
   return w.kind === 'craft' ? `craft:${w.name}:${w.table ?? ''}` : `${w.kind}:${w.pos}`
 }
 
-function candidates(bot: Bot, names: Set<string>, radius: number, eligible: (block: LocalBlock) => boolean): Vec3[] {
+function candidates(bot: Bot, names: Set<string>, radius: number, eligible: (block: LocalBlock) => boolean, count = 2): Vec3[] {
   const matching = [...names].flatMap(name => {
     const block = bot.registry.blocksByName[name]
     return block ? [block.id] : []
   })
   // Filter before the nearest-N limit; otherwise buried stone fills the results in normal terrain.
-  return matching.length ? bot.findBlocks({ matching, maxDistance: radius, count: 2, useExtraInfo: block =>
+  return matching.length ? bot.findBlocks({ matching, maxDistance: radius, count, useExtraInfo: block =>
     block.position.distanceTo(bot.entity.position) <= radius + 1 && eligible(block),
   }) : []
 }
@@ -271,6 +271,21 @@ export function enumerateWork(bot: Bot, project: SurvivalProject, radius: number
     }
     const cobble = number('cobblestone')
     if (hasPick && (cobble < 8 || (buildingOpen && cobble < 14))) {
+      // Sand and dirt cover most surface stone: dig through the cover first. The stone
+      // beneath only becomes eligible once exposed, so offer dig-jobs for the blocks
+      // directly above stone within reach of the pickaxe.
+      const stone = bot.registry.blocksByName.stone
+      if (stone) {
+        const digJob = (block: LocalBlock): Work => ({ kind: 'mine', label: `Dig ${block.name} to uncover stone`, name: block.name, pos: block.position })
+        for (const pos of candidates(bot, soilBlocks, search, block =>
+          block.position.distanceTo(bot.entity.position) <= search + 1 && diggableSoil(bot, block, project, radius) &&
+          // Only cover blocks that actually hide stone directly below or beside them.
+          [block.position.offset(0, -1, 0), ...faces.slice(2).map(f => block.position.plus(f))]
+            .some(n => bot.blockAt(n, false)?.name === 'stone'), 2)) {
+          const block = bot.blockAt(pos, false)
+          if (block && !blocked(digJob(block))) add(digJob(block), upgrade && cobble < 3 ? 110 : wantsTools ? 84 : 58)
+        }
+      }
       suggestMine(new Set(['stone']), upgrade && cobble < 3 ? 112 : ironNeed && rawIron && !furnace && !number('furnace') && cobble < 8 ? 106 : wantsTools ? 83 : 56, true)
     }
     if (stoneOrBetter && ironNeed && rawIron + ingots < 3 && !project.smelting) suggestMine(ironOres, 112, true)
