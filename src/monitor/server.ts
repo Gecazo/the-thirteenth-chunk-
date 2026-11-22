@@ -23,15 +23,16 @@ interface Snapshot {
 
 interface MonitorControl {
   connect?: () => void
+  chat?: (message: string) => void
 }
 
-interface MonitorControl {
-  connect?: () => void
-}
+export interface MonitorChatMessage { at: number; from: 'operator' | 'bot'; text: string }
 
 const esc: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
 const safe = (s: string) => s.replace(/[&<>"']/g, c => esc[c] ?? c)
 
+/** Last messages exchanged between dashboard operators and the bot. */
+const chatLog: MonitorChatMessage[] = []
 function html(url: string): string {
   const stateUrl = safe(url) + '/api/state'
   const stateUrlJson = JSON.stringify(url + '/api/state')
@@ -66,6 +67,14 @@ function html(url: string): string {
     th { color:var(--muted); font-weight:600; }
     .small { font-size:12px; color:var(--muted); }
     .mapimg { width:100%; max-width:520px; image-rendering:pixelated; border-radius:8px; border:1px solid var(--line); background:var(--bg); }
+    .chatlog { height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:2px; }
+    .bubble { max-width:85%; padding:6px 10px; border-radius:10px; border:1px solid var(--line); background:#16222f; white-space:pre-wrap; word-break:break-word; }
+    .bubble.operator { align-self:flex-end; background:#1d3a5f; border-color:#2b5b8f; }
+    .bubble .who { display:block; font-size:11px; color:var(--muted); margin-bottom:2px; }
+    .chatrow { display:flex; gap:8px; margin-top:8px; }
+    .chatrow input { flex:1; background:#0d1520; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 10px; font:inherit; }
+    .chatrow button { background:transparent; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 14px; cursor:pointer; font:inherit; }
+    .chatrow button:disabled { opacity:.5; cursor:default; }
   </style>
 </head>
 <body>
@@ -87,11 +96,16 @@ function html(url: string): string {
     <section><h2>Nearby / Safety</h2><pre id="safety" class="mono">-</pre></section>
     <section><h2>Recent Events</h2><pre id="events" class="mono">-</pre></section>
     <section style="grid-column:1/-1"><h2>Map (top-down)</h2><img id="map" class="mapimg" alt="map" /><div class="small" id="mapinfo">white=bot · cyan=player · red=hostile · yellow=item drop</div></section>
+    <section id="chatSection" style="grid-column:1/-1"><h2>Chat with the bot</h2>
+      <div id="chatlog" class="chatlog"><div class="small">Say hello — messages go straight to the bot (and to Ollama for dialogue).</div></div>
+      <div class="chatrow"><input id="chatInput" placeholder="Type a message… (also works with !status, !play, !stop)" maxlength="240" /><button id="chatSend">Send</button></div>
+    </section>
     <section style="grid-column:1/-1"><h2>Raw state snapshot</h2><pre id="raw" class="mono">-</pre></section>
   </main>
   <script>
     const apiUrl = ${stateUrlJson}
     const connectUrl = ${connectUrlJson}
+    const chatUrl = apiUrl.replace('/api/state', '/api/chat')
     const BR = String.fromCharCode(10)
     const fmt = function (n) { return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2).replace(/\\.00$/, '') : String(n) }
     const pct = function (n) { return typeof n === 'number' ? Math.round(n * 100) + '%' : '-' }
@@ -191,6 +205,59 @@ function html(url: string): string {
       }
     }
     document.getElementById('connectNow').addEventListener('click', function () { void connectNow() })
+
+    const chatlog = document.getElementById('chatlog')
+    let lastChatKey = ''
+    function renderChat(messages) {
+      if (!messages || !messages.length) return
+      const key = messages.length + ':' + messages[messages.length - 1].at + ':' + messages[messages.length - 1].text
+      if (key === lastChatKey) return
+      lastChatKey = key
+      chatlog.textContent = ''
+      for (const m of messages) {
+        const bubble = document.createElement('div')
+        bubble.className = 'bubble ' + (m.from === 'operator' ? 'operator' : 'bot')
+        const who = document.createElement('span')
+        who.className = 'who'
+        who.textContent = (m.from === 'operator' ? 'you' : 'bot') + ' · ' + new Date(m.at).toLocaleTimeString()
+        const text = document.createElement('span')
+        text.textContent = m.text
+        bubble.appendChild(who)
+        bubble.appendChild(text)
+        chatlog.appendChild(bubble)
+      }
+      chatlog.scrollTop = chatlog.scrollHeight
+    }
+    let chatBusy = false
+    async function refreshChat() {
+      try {
+        const r = await fetch(chatUrl, { cache: 'no-store' })
+        if (r.ok) renderChat((await r.json()).messages)
+      } catch (e) { /* chat history is best-effort */ }
+    }
+    async function sendChat() {
+      const input = document.getElementById('chatInput')
+      const button = document.getElementById('chatSend')
+      const text = input.value.trim()
+      if (!text || chatBusy) return
+      chatBusy = true
+      button.disabled = true
+      try {
+        const r = await fetch(chatUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: text }) })
+        if (!r.ok) {
+          const body = await r.json().catch(function () { return {} })
+          alert(body.error || 'Could not send the message')
+        } else {
+          input.value = ''
+          await refreshChat()
+        }
+      } catch (e) { alert('Could not reach the monitor server') }
+      finally { chatBusy = false; button.disabled = false; input.focus() }
+    }
+    document.getElementById('chatSend').addEventListener('click', function () { void sendChat() })
+    document.getElementById('chatInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') void sendChat() })
+    refreshChat(); setInterval(refreshChat, 1500)
+
     refresh(); setInterval(refresh, 1200)
     let mapTick = 0
     const mapUrl = apiUrl.replace('/api/state', '/api/map.png')
@@ -260,6 +327,32 @@ export function startMonitor(config: Config): MonitorSink | undefined {
       res.end(JSON.stringify({ ok: true }))
       return
     }
+    if (path === '/api/chat' && req.method === 'POST') {
+      let body = ''
+      req.on('data', chunk => { body += chunk; if (body.length > 2048) req.destroy() })
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { message?: unknown }
+          const message = typeof parsed.message === 'string' ? parsed.message.trim().slice(0, 240) : ''
+          if (!message) throw new Error('empty')
+          chatLog.push({ at: Date.now(), from: 'operator', text: message })
+          if (chatLog.length > 80) chatLog.splice(0, chatLog.length - 80)
+          control.chat?.(message)
+          note('info', `Dashboard chat: ${message.slice(0, 60)}`)
+          res.writeHead(202, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: true }))
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: 'Send {"message": "text"} with 1-240 characters' }))
+        }
+      })
+      return
+    }
+    if (path === '/api/chat' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ messages: chatLog }))
+      return
+    }
     if (path === '/api/map.png') {
       if (!renderer) {
         res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -305,6 +398,13 @@ export function startMonitor(config: Config): MonitorSink | undefined {
   return {
     url,
     setConnectHandler(handler) { control.connect = handler },
+    setChatHandler(handler) { control.chat = handler },
+    addBotMessage(text) {
+      const message = text.slice(0, 240)
+      if (!message) return
+      chatLog.push({ at: Date.now(), from: 'bot', text: message })
+      if (chatLog.length > 80) chatLog.splice(0, chatLog.length - 80)
+    },
     setRenderer(fn) {
       renderer = fn
       mapCache = { at: 0 }

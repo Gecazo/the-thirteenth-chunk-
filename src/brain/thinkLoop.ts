@@ -77,6 +77,13 @@ export class ThinkLoop {
     this.ctx.monitor?.update({ activeJob: label ?? null })
   }
 
+  /** Surface a bot-side chat line (morning notes, replies) on the dashboard. */
+  say(text: string) {
+    const clean = text.trim().slice(0, 240)
+    if (!clean) return
+    this.ctx.monitor?.addBotMessage(clean)
+  }
+
   start() {
     if (this.ready || this.life.signal.aborted) return
     this.ready = true
@@ -344,6 +351,8 @@ export class ThinkLoop {
     if (rest.announced || !rest.woke || !rest.record || !this.ready || this.ctx.engine.get().runtime.paused) return
     if (this.bot.isSleeping || this.bot.time.timeOfDay >= 12541) return
     rest.announced = true
-    this.bot.chat(morningStatement(rest.record))
+    const morning = morningStatement(rest.record)
+    this.say(morning)
+    this.bot.chat(morning)
   }
 }

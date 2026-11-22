@@ -46,16 +46,19 @@ function safeMovement(bot: Bot, radius: number) {
 
 function wireChat(bot: Bot, ctx: MinecraftContext, loop: ThinkLoop) {
   let nextCommand = 0, nextDenial = 0, nextDialogue = 0, conversation: Promise<unknown> | undefined
-  // Protocol sender UUID + plain payload, not a username parsed from formatted/system chat.
-  bot._client.on('playerChat', packet => {
-    if (!loop.live || typeof packet.plainMessage !== 'string' || packet.plainMessage.length > 256) return
-    const sender = Object.values(bot.players).find(p => p.uuid === packet.sender)?.username
-    if (!sender || sender === bot.username || !playerName.safeParse(sender).success) return
-    const message = classifyChat(packet.plainMessage, bot.username, Boolean(ctx.config.SOULBOT_INSTANCE))
-    if (!message) return
-    const { text } = message, now = ctx.clock.now()
-    const auth = ctx.config.MC_ADMINS.has(sender.toLowerCase()) && (ctx.config.MC_AUTH === 'offline' || packet.verified === true)
-    if (message.kind === 'command') {
+  // Dashboard chat: operators type in the web monitor; the bot answers here and in the dashboard.
+  ctx.monitor?.setChatHandler(message => {
+    if (!loop.live) { ctx.monitor?.addBotMessage('I am not connected to a server yet — use Connect now first.'); return }
+    if (conversation || ctx.engine.get().circadian.sleeping) { ctx.monitor?.addBotMessage('Give me a moment; I am busy or asleep.'); return }
+    const text = message.startsWith('!') ? message : `@${bot.username} ${message}`
+    // Reuse the exact Minecraft pipeline: same addressing, same commands, same Ollama dialogue.
+    handleChatText(bot.username, text, false)
+  })
+  function handleChatText(sender: string, text: string, whisperReply: boolean, verified = true) {
+    const now = ctx.clock.now()
+    const auth = ctx.config.MC_ADMINS.has(sender.toLowerCase()) && (ctx.config.MC_AUTH === 'offline' || verified)
+    const isCommand = text.startsWith('!')
+    if (isCommand) {
       const stop = auth && /^!stop$/i.test(text)
       if (!stop && (auth ? now < nextCommand : now < nextDenial)) return
       if (auth) nextCommand = now + 750
@@ -71,8 +74,8 @@ function wireChat(bot: Bot, ctx: MinecraftContext, loop: ThinkLoop) {
           trust: player => ctx.social.read(player)?.trust,
           activity: () => loop.activity,
           recall: query => recallHistory(ctx.engine.get(), ctx.memories.list(), now, query, ctx.stm.all())[0]?.summary.slice(0, 160) ?? 'I found no memory matching that topic.',
-          remember: (player, text) => {
-            const journal = editPlayerNote(ctx.engine.get().journal, player, text)
+          remember: (player, note) => {
+            const journal = editPlayerNote(ctx.engine.get().journal, player, note)
             if (!journal) return false
             const state = ctx.engine.prepare(s => { s.journal = journal })
             ctx.stateRepo.save(state, ctx.stm.all())
@@ -84,9 +87,10 @@ function wireChat(bot: Bot, ctx: MinecraftContext, loop: ThinkLoop) {
             const top = retrieve(ctx.memories.list(), { topics: s.goals.intentions, mood: s.emotions.joy - s.emotions.fear, now, limit: 1 })[0]
             return s.journal.notes[0]?.text.slice(0, 160) ?? top?.summary.slice(0, 160) ?? `No consolidated memories yet. ${ctx.stm.all().length} recent events in short-term memory.`
           },
-        }, sender, text, packet.verified)
-        bot.whisper(sender, reply)
-      } catch (err) { ctx.log.error({ error: errorMessage(err) }, 'Command failed'); bot.whisper(sender, 'That command did not complete; check the local logs.') }
+        }, sender, text, verified)
+        ctx.monitor?.addBotMessage(reply)
+        if (whisperReply) bot.whisper(sender, reply)
+      } catch (err) { ctx.log.error({ error: errorMessage(err) }, 'Command failed'); ctx.monitor?.addBotMessage('That command did not complete; check the local logs.') }
       return
     }
     const state = ctx.engine.get()
@@ -96,10 +100,25 @@ function wireChat(bot: Bot, ctx: MinecraftContext, loop: ThinkLoop) {
     const recall = recallContext(state, ctx.memories.list(), now, text, auth ? sender : undefined, ctx.stm.all())
     conversation = replyToChat(text, state, ctx.providers.local, signal, { activity: loop.activity, recall }).then(reply => {
       if (reply && !signal.aborted && !bot.isSleeping && !ctx.engine.get().runtime.paused) {
-        if (recall.playerNote) bot.whisper(sender, reply)
+        ctx.monitor?.addBotMessage(reply)
+        if (whisperReply) bot.whisper(sender, reply)
         else bot.chat(reply)
       }
     }).catch(() => {}).finally(() => { conversation = undefined })
+  }
+  // Protocol sender UUID + plain payload, not a username parsed from formatted/system chat.
+  bot._client.on('playerChat', packet => {
+    if (!loop.live || typeof packet.plainMessage !== 'string' || packet.plainMessage.length > 256) return
+    const sender = Object.values(bot.players).find(p => p.uuid === packet.sender)?.username
+    if (!sender || sender === bot.username || !playerName.safeParse(sender).success) return
+    const message = classifyChat(packet.plainMessage, bot.username, Boolean(ctx.config.SOULBOT_INSTANCE))
+    if (!message) return
+    const { text } = message
+    // Commands whisper back; plain dialogue answers in public chat, unless the
+    // player addressed the bot directly (@bot hello / "adam: hello"), which stays a whisper.
+    const addressed = /^@?[A-Za-z0-9_]{1,16}[,:]?\s+/u.test(packet.plainMessage.trim())
+    handleChatText(sender, text, message.kind === 'command' || addressed,
+      ctx.config.MC_AUTH === 'offline' || packet.verified === true)
   })
 }
 

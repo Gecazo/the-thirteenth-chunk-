@@ -24,9 +24,13 @@ export interface MonitorPatch {
   events?: MemoryEvent[]
 }
 
+export interface MonitorChatMessage { at: number; from: 'operator' | 'bot'; text: string }
+
 export interface MonitorSink {
   readonly url: string
   setConnectHandler(handler: (() => void) | undefined): void
+  setChatHandler(handler?: (message: string) => void): void
+  addBotMessage(text: string): void
   setRenderer(fn?: () => string | undefined): void
   update(patch: MonitorPatch): void
   note(level: 'info' | 'warn' | 'error', message: string): void
