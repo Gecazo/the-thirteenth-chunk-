@@ -21,7 +21,9 @@ export function placementSupports(bot: Bot, pos: Vec3) {
 /** Standalone soil-dig eligibility: exposed soft blocks the bot can dig with a bare hand. */
 export function diggableSoil(bot: Bot, block: LocalBlock, project: SurvivalProject, radius: number): boolean {
   const pos = block.position, feet = bot.entity.position.floored()
-  if (!soilBlocks.has(block.name) || !insideWorkArea(project.anchor, pos, radius) || pos.y < feet.y - 2) return false
+  // Depth window is generous (±4): the bot walks a sloping shore between job offer and
+  // execution, and a sand two blocks lower at offer time can be four lower on arrival.
+  if (!soilBlocks.has(block.name) || !insideWorkArea(project.anchor, pos, radius) || pos.y < feet.y - 4) return false
   if (feet.x === pos.x && feet.z === pos.z && pos.y <= feet.y) return false
   if (protectedByProject(project, pos)) return false
   if (faces.some(face => dangerousBlocks.has(bot.blockAt(pos.plus(face), false)?.name ?? ''))) return false
@@ -35,7 +37,8 @@ export function diggableSoil(bot: Bot, block: LocalBlock, project: SurvivalProje
 
 export function mineable(bot: Bot, block: LocalBlock, project: SurvivalProject, radius: number): boolean {
   const pos = block.position, feet = bot.entity.position.floored()
-  if (!insideWorkArea(project.anchor, pos, radius) || pos.y < feet.y - 2) return false
+  // Same sloping-terrain allowance as diggableSoil: offers are re-checked after walking.
+  if (!insideWorkArea(project.anchor, pos, radius) || pos.y < feet.y - 4) return false
   if (feet.x === pos.x && feet.z === pos.z && pos.y <= feet.y) return false
   if (protectedByProject(project, pos)) return false
   if (faces.some(face => dangerousBlocks.has(bot.blockAt(pos.plus(face), false)?.name ?? ''))) return false
