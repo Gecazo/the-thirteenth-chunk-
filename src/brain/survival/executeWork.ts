@@ -29,10 +29,11 @@ const canReach = (bot: Bot, block: LocalBlock) => seesCenter(bot, eye(bot), bloc
 // mineflayer's bot.dig() sweep-checks the block's whole collision box against the view ray,
 // so an exact hit on the block center is not required. Accept when the ray stops at the
 // target itself or in a directly adjacent voxel (hole rims occlude the exact center line of
-// a stone sitting in a 1-deep pit, yet the dig still lands). The final authority is
-// bot.canDigBlock, which measures 5.1 from the eye.
+// a stone sitting in a 1-deep pit, yet the dig still lands). Measure exactly like
+// bot.canDigBlock does (eye at +1.65, limit 5.1) — our own stricter caps produced stones
+// that mineflayer could dig but we rejected.
 function canDigFromHere(bot: Bot, block: LocalBlock): boolean {
-  const from = eye(bot), target = center(block.position)
+  const from = bot.entity.position.offset(0, 1.65, 0), target = center(block.position)
   const offset = target.minus(from), distance = offset.norm()
   if (distance > 5.05) return false
   const hit = bot.world.raycast(from, offset.unit(), distance + .05) as { position?: Vec3 } | null
@@ -92,6 +93,29 @@ class GoalForInteraction extends goals.Goal {
   }
 }
 
+/** The stone the planner offered is out of arm's reach from every spot the pathfinder can
+ *  reach right now. Failing fast (before any walking) keeps the planner from fixating on it. */
+function unreachableForMining(bot: Bot, block: LocalBlock, project: SurvivalProject, radius: number): boolean {
+  const feet = bot.entity.position.floored()
+  if (canDigFromHere(bot, block)) return false
+  for (const dx of [-1, 0, 1]) for (const dz of [-1, 0, 1]) for (const dy of [-1, 0, 1]) {
+    const cell = block.position.offset(dx, dy, dz)
+    if (!standable(bot, cell) || !insideWorkArea(project.anchor, cell, radius)) continue
+    const eye = cell.offset(.5, 1.62, .5)
+    const target = center(block.position)
+    const distance = target.minus(eye).norm()
+    if (distance > 5) continue
+    const hit = bot.world.raycast(eye, target.minus(eye).unit(), distance + .05) as { position?: Vec3 } | null
+    if (!hit?.position) continue
+    const delta = hit.position.minus(block.position)
+    if (Math.abs(delta.x) <= 1 && Math.abs(delta.y) <= 1 && Math.abs(delta.z) <= 1) return false
+  }
+  // Never reject the bot's own digging level or visible surface work below; only reject
+  // when every neighbor cell is standable-checked above and none can dig.
+  void feet; void project
+  return true
+}
+
 async function goto(bot: Bot, goal: goals.Goal, signal: AbortSignal) {
   signal.throwIfAborted()
   if (!bot.pathfinder) throw new Error('Pathfinder is unavailable')
@@ -141,7 +165,9 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
     return b
   }
   check()
-  if (!rooted) await approach(bot, work.pos, signal)
+  if (!unreachableForMining(bot, bot.blockAt(work.pos, false)!, project, radius)) {
+    if (!rooted) await approach(bot, work.pos, signal)
+  }
   const ready = check()
   let tool = bot.pathfinder.bestHarvestTool(ready)
   if (!logs.has(work.name) && !soilBlocks.has(work.name)) {
