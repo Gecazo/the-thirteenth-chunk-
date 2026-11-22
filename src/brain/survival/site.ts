@@ -162,10 +162,12 @@ export function findSite(bot: Bot, anchor: Point, radius: number): Point | undef
 export function findWorkshopSite(bot: Bot, project: SurvivalProject, radius: number): Point | undefined {
   if (!project.shelter) return undefined
   const home = vec(project.shelter)
-  for (const distance of [6, 8, 10]) for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]] as const) {
-    const pos = home.offset(x * distance, 0, z * distance)
-    if (insideWorkArea(project.anchor, pos, radius - 4) && flatShelterSite(bot, pos, 3)) return point(pos)
-  }
+  // Sloping shore terrain: also try offsets above and below the home level, like findSite.
+  for (const distance of [6, 8, 10]) for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]] as const)
+    for (const y of [0, 1, -1, 2, -2]) {
+      const pos = home.offset(x * distance, y, z * distance)
+      if (insideWorkArea(project.anchor, pos, radius - 4) && Math.abs(project.anchor.y - pos.y) <= 8 && flatShelterSite(bot, pos, 3)) return point(pos)
+    }
   return undefined
 }
 
