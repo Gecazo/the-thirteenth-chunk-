@@ -11,7 +11,7 @@ import { enumerateWork, maybeChooseSite, visitKey, workKey } from './opportuniti
 import { insideWorkArea } from './site'
 import { executeWork } from './executeWork'
 import { renderWorldView } from './vision'
-import type { Work } from './types'
+import { soilBlocks, type Work } from './types'
 import { newMilestones } from './progress'
 import { survivalPlaybook } from './playbook'
 import { skillRank, workDistance, trainable } from './skills'
@@ -49,6 +49,7 @@ export class Autonomy {
   private attempts = new Map<string, number>()
   private visited = new Map<string, number>()
   private vision = true
+  private soilRun = 0
   constructor(private readonly bot: Bot, private readonly config: Config, private readonly log: Logger, private readonly advisor?: Advisor,
     private readonly team?: TeamBoard, private readonly memories?: MemoryRepo, private readonly stm?: ShortTermMemory) {}
 
@@ -97,10 +98,12 @@ export class Autonomy {
     if (project !== state.project) update(project)
     saveProgress(project)
     const at = Date.now()
-    for (const [key, until] of this.attempts) if (until <= at) this.attempts.delete(key)
+    for (const [key, until] of this.attempts) if (until <= at && key !== 'soil-pause') this.attempts.delete(key)
     const reserved = team?.unavailable()
+    const soilPaused = (this.attempts.get('soil-pause') ?? 0) > at
     const options = enumerateWork(bot, project, config.AUTONOMY_RADIUS, state.goals.userGoal, this.visited, job => {
       const key = teamJobKey(job)
+      if (soilPaused && job.kind === 'mine' && soilBlocks.has(job.name)) return true
       return this.attempts.has(workKey(job)) || (key !== undefined && reserved?.has(key) === true)
     })
     if (!options.length) { onJob?.('Waiting: no eligible nearby work'); return }
@@ -160,11 +163,15 @@ export class Autonomy {
       const count = () => bot.inventory.items().reduce((n, item) => n + item.count, 0)
       const gathering = chosen.kind === 'mine' || chosen.kind === 'tree'
       const before = gathering ? count() : 0
+      const strictPickup = chosen.kind === 'tree' || (chosen.kind === 'mine' && !soilBlocks.has(chosen.name))
       const execution = AbortSignal.any([signal, AbortSignal.timeout(config.ACTION_TIMEOUT_MS)])
       await executeWork(bot, chosen, project, config.AUTONOMY_RADIUS, execution, smelting => {
         if (!!project.smelting !== smelting) { project = { ...project, smelting }; update(project) }
       })
-      if (gathering && count() <= before) throw new Error('No resource pickup confirmed in inventory')
+      // For logs and stone/ore the inventory must confirm the pickup (drops can be lost).
+      // Soil filler jobs only count progress by the block actually breaking: falling sand,
+      // gravity drops and pickup races otherwise turn clean digs into false failures.
+      if (strictPickup && count() <= before) throw new Error('No resource pickup confirmed in inventory')
       reportOutcome(true)
       if (chosen.kind === 'place' && chosen.purpose === 'table') update({ ...project, table: point(chosen.pos) })
       else if (chosen.kind === 'place' && chosen.purpose === 'furnace') update({ ...project, furnace: point(chosen.pos), smelting: false })
@@ -180,6 +187,16 @@ export class Autonomy {
         if (this.visited.size >= 128) this.visited.delete(this.visited.keys().next().value!)
         this.visited.set(zone, (this.visited.get(zone) ?? 0) + 1)
       }
+      // Soil digging is a filler, not a career: after a short run of successful digs,
+      // pause soil jobs so crafting/building/exploration gets its turn. Also cool each
+      // dug cell down so gravity-settled neighbors don't re-offer stale targets.
+      if (chosen.kind === 'mine' && soilBlocks.has(chosen.name)) {
+        this.soilRun += 1
+        if (this.soilRun >= 3) this.attempts.set('soil-pause', Date.now() + 45_000)
+        this.attempts.set(workKey(chosen), Date.now() + 8_000)
+      } else if (chosen.kind !== 'mine') {
+        this.soilRun = 0
+      }
       log.info({ work: chosen.kind, task: chosen.label, source }, 'Survival job completed')
       team?.report(`Finished: ${chosen.label}`)
       return chosen
@@ -187,6 +204,7 @@ export class Autonomy {
       if (!signal.aborted || signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError') {
         reportOutcome(false)
         team?.report(`Blocked: ${chosen.label}`)
+        if (chosen.kind === 'mine' && soilBlocks.has(chosen.name)) this.soilRun = 0
       }
       log.warn({ work: chosen.kind, task: chosen.label, source, error: errorMessage(error) }, 'Survival job failed')
       this.attempts.set(workKey(chosen), Date.now() + 12_000)

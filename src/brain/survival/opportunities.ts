@@ -25,6 +25,9 @@ export function diggableSoil(bot: Bot, block: LocalBlock, project: SurvivalProje
   if (feet.x === pos.x && feet.z === pos.z && pos.y <= feet.y) return false
   if (protectedByProject(project, pos)) return false
   if (faces.some(face => dangerousBlocks.has(bot.blockAt(pos.plus(face), false)?.name ?? ''))) return false
+  // Skip soil with soil stacked above (gravity churn makes these jobs stale).
+  const above = bot.blockAt(pos.offset(0, 1, 0), false)
+  if (above && soilBlocks.has(above.name)) return false
   return faces.some(face => isAir(bot.blockAt(pos.plus(face), false)?.name))
 }
 
@@ -43,6 +46,10 @@ export function mineable(bot: Bot, block: LocalBlock, project: SurvivalProject, 
   }
   if (soilBlocks.has(block.name)) {
     // Easy surface dig: exposed like ores; covers dirt, sand, gravel and friends.
+    // Skip soil with more soil stacked on top (gravity churn: digging support sand
+    // makes the column fall and the same cell keeps re-offering stale jobs).
+    const above = bot.blockAt(pos.offset(0, 1, 0), false)
+    if (above && soilBlocks.has(above.name)) return false
     return faces.slice(2).some(face => isAir(bot.blockAt(pos.plus(face), false)?.name))
   }
   if (!ores.has(block.name)) return false

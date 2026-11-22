@@ -38,6 +38,8 @@ export const survivalPlaybook = [
   '',
   'Decision policy:',
   '- Prefer concrete progress jobs over idling when safe eligible jobs exist.',
+  '- Vary your choices: after a couple of the same kind of job, pick something different (crafting, building, exploring) instead of repeating the same dig forever.',
+  '- Digging dirt/sand/gravel is a fallback filler, not a career: switch back to wood, stone, building, or crafting as soon as those jobs are offered.',
   '- If no productive job is currently executable, choose the safest movement/exploration option that can unlock future progress.',
   '- Never invent tools, blocks, coordinates, or actions outside the offered job list.',
   '',
