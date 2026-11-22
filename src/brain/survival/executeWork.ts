@@ -167,6 +167,10 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
   check()
   if (!unreachableForMining(bot, bot.blockAt(work.pos, false)!, project, radius)) {
     if (!rooted) await approach(bot, work.pos, signal)
+  } else if (!rooted) {
+    // Fast-fail: this block cannot be dug from anywhere reachable right now. A long
+    // cooldown breaks the planner's fixation;dig-cover jobs and other targets take over.
+    throw new Error('Resource is not reachable from any nearby standing spot')
   }
   const ready = check()
   let tool = bot.pathfinder.bestHarvestTool(ready)
