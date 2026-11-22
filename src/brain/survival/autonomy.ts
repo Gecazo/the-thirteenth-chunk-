@@ -50,6 +50,7 @@ export class Autonomy {
   private visited = new Map<string, number>()
   private vision = true
   private soilRun = 0
+  private failures = new Map<string, number>()
   constructor(private readonly bot: Bot, private readonly config: Config, private readonly log: Logger, private readonly advisor?: Advisor,
     private readonly team?: TeamBoard, private readonly memories?: MemoryRepo, private readonly stm?: ShortTermMemory) {}
 
@@ -197,6 +198,8 @@ export class Autonomy {
       } else if (chosen.kind !== 'mine') {
         this.soilRun = 0
       }
+      // Reset the failure streak on success.
+      this.failures.delete(workKey(chosen))
       log.info({ work: chosen.kind, task: chosen.label, source }, 'Survival job completed')
       team?.report(`Finished: ${chosen.label}`)
       return chosen
@@ -207,7 +210,13 @@ export class Autonomy {
         if (chosen.kind === 'mine' && soilBlocks.has(chosen.name)) this.soilRun = 0
       }
       log.warn({ work: chosen.kind, task: chosen.label, source, error: errorMessage(error) }, 'Survival job failed')
-      this.attempts.set(workKey(chosen), Date.now() + 12_000)
+      // Track consecutive failures per position: a stone the bot cannot reach (water gap,
+      // hole rim) gets a long cooldown so the planner stops ping-ponging between two
+      // impossible targets and moves to other work instead.
+      const key = workKey(chosen)
+      const streak = (this.failures.get(key) ?? 0) + 1
+      this.failures.set(key, streak)
+      this.attempts.set(key, Date.now() + (streak >= 2 && chosen.kind !== 'walk' ? 180_000 : 12_000))
       throw error
     } finally {
       for (const target of locks) team?.release(target)
