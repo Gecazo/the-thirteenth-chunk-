@@ -116,14 +116,22 @@ async function harvest(bot: Bot, work: Mining, project: SurvivalProject, radius:
     tool ??= bot.inventory.items().find(i => i.name.endsWith('_axe') && ready.canHarvest(i.type)) ?? null
   }
   if (tool) await untilAbort(bot.equip(tool, 'hand'), signal)
-  const block = check()
-  // Logs break with any hand; only stone/ore require the right pickaxe tier.
-  const toolless = logs.has(work.name) || block.canHarvest(bot.heldItem?.type ?? null)
-  if (!canReach(bot, block) || !bot.canDigBlock(block) || !toolless) throw new Error('Resource is not harvestable from here')
+  // Re-approach after look-at: the ray to a high log can be flaky from one angle.
+  const diggable = async () => {
+    const block = check()
+    if (!canReach(bot, block) || !bot.canDigBlock(block)) {
+      try { await approach(bot, block.position, signal) } catch { /* keep existing checks */ }
+    }
+    const target = check()
+    return canReach(bot, target) && bot.canDigBlock(target) ? target : null
+  }
+  let block = await diggable()
+  if (!block) throw new Error('Resource is not harvestable from here')
   const stop = () => bot.stopDigging()
   signal.throwIfAborted()
   await untilAbort(bot.lookAt(center(block.position), true), signal)
-  if (!canReach(bot, check())) throw new Error('Resource no longer in sight')
+  block = await diggable()
+  if (!block) throw new Error('Resource no longer in sight')
   signal.throwIfAborted()
   signal.addEventListener('abort', stop, { once: true })
   try { await untilAbort(bot.dig(block, 'ignore'), signal) } finally { signal.removeEventListener('abort', stop) }
