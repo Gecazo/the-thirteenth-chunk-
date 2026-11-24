@@ -18,3 +18,4 @@ data/
 
 # local share archives
 soulbot-share.*
+.DS_Store

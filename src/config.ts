@@ -34,6 +34,9 @@ const schema = z.object({
   LOCAL_LLM_ENABLED: bool(true), OLLAMA_BASE_URL: url.default('http://localhost:11434'),
   OLLAMA_MODEL: z.string().min(1).max(200).default('qwen3.5:4b'), OLLAMA_TIMEOUT_MS: int(30000, 250, 60000),
   OLLAMA_CONTEXT: int(4096, 2048, 16384),
+  // OpenAI-compatible local engine (colibrì, llama.cpp, vLLM). Takes precedence over Ollama when set.
+  LOCAL_OPENAI_BASE_URL: url.optional(), LOCAL_OPENAI_MODEL: z.string().min(1).max(200).default('qwen3.6-colibri'),
+  LOCAL_OPENAI_TIMEOUT_MS: int(60000, 1000, 180000),
   AUTONOMY_ENABLED: bool(false), AUTONOMY_VISION: bool(true), AUTONOMY_RADIUS: int(28, 12, 48),
   AUTONOMY_MODEL_TIMEOUT_MS: int(12000, 1000, 40000),
   AUTONOMY_REQUIRE_AI: bool(true),

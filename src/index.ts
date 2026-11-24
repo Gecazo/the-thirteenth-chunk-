@@ -11,7 +11,7 @@ import { SocialRepo } from './storage/repositories/socialRepo'
 import { SleepRepo } from './storage/repositories/sleepRepo'
 import { StateEngine } from './brain/stateEngine'
 import { ShortTermMemory } from './brain/memory/shortTermMemory'
-import { ollamaClient } from './llm/localOllamaClient'
+import { ollamaClient, openAiLocalClient } from './llm/localOllamaClient'
 import { cloudClient } from './llm/cloudClient'
 import { runMinecraft, type MinecraftContext } from './bot/minecraftClient'
 import { ReconnectControl, reconnect } from './bot/reconnect'
@@ -37,12 +37,15 @@ async function main() {
     const controller = new AbortController()
     const ctx: MinecraftContext = { config, log, clock, rng, engine, stm, stateRepo,
       memories: new MemoryRepo(storage), social: new SocialRepo(storage), repo: new SleepRepo(storage),
-      providers: { local: config.LOCAL_LLM_ENABLED ? ollamaClient(config) : undefined, cloud: config.CLOUD_SLEEP_ENABLED ? cloudClient(config) : undefined },
+      providers: { local: config.LOCAL_LLM_ENABLED
+        ? (config.LOCAL_OPENAI_BASE_URL ? openAiLocalClient(config) : ollamaClient(config))
+        : undefined, cloud: config.CLOUD_SLEEP_ENABLED ? cloudClient(config) : undefined },
       monitor, team,
     }
     installShutdown(async () => { log.info('Graceful shutdown requested'); controller.abort(); await monitor?.close() })
     log.info({ host: config.MC_HOST, port: config.MC_PORT, identity: engine.get().identity.id, auth: config.MC_AUTH,
-      soulFile: config.STATE_PATH, localAdvisor: config.LOCAL_LLM_ENABLED, cloudSleepAdvisor: config.CLOUD_SLEEP_ENABLED,
+      soulFile: config.STATE_PATH, localAdvisor: config.LOCAL_LLM_ENABLED,
+      localEngine: config.LOCAL_OPENAI_BASE_URL ?? (config.LOCAL_LLM_ENABLED ? 'ollama' : 'none'), cloudSleepAdvisor: config.CLOUD_SLEEP_ENABLED,
     }, 'Starting SoulBot behavior simulation')
     if (!config.MC_ADMINS.size) log.warn('No MC_ADMINS configured: only !status is available in chat')
     await reconnect(signal => runMinecraft(ctx, signal), controller.signal, log, rng, reconnectControl)

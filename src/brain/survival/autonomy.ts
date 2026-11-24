@@ -115,7 +115,7 @@ export class Autonomy {
     if (this.advisor) {
       onJob?.('Thinking with Ollama…')
       onSource?.('ollama-pending')
-      const ask = AbortSignal.any([signal, AbortSignal.timeout(config.AUTONOMY_MODEL_TIMEOUT_MS)])
+      const ask = AbortSignal.any([signal, AbortSignal.timeout(Math.max(config.AUTONOMY_MODEL_TIMEOUT_MS, config.LOCAL_OPENAI_TIMEOUT_MS))])
       try {
         let image: string | undefined
         if (config.AUTONOMY_VISION && this.vision) {
